@@ -29,6 +29,7 @@ export async function GET(req: Request) {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
+    // TMDB sonuçlarını cachelemek iyi olur
     next: { revalidate: 3600 },
   });
 

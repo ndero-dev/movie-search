@@ -1,86 +1,110 @@
-type MovieDetails = {
-  id: number;
-  title: string;
-  overview: string;
-  release_date?: string;
-  runtime?: number;
-  genres?: { id: number; name: string }[];
-  poster_path?: string | null;
-  vote_average?: number;
-  vote_count?: number;
-  homepage?: string | null;
-};
+import { redirect } from "next/navigation";
+import BackToSearchLink from "@/app/components/BackToSearchLink";
 
-async function tmdb(path: string) {
-  const base = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
-  const res = await fetch(`${base}/api/tmdb?path=${encodeURIComponent(path)}&language=tr-TR`, { cache: "no-store" });
-  return { ok: res.ok, data: await res.json() };
+type SP = { from?: string | string[] };
+
+async function tmdbFetch(path: string) {
+  const token = process.env.TMDB_BEARER_TOKEN;
+  if (!token) throw new Error("TMDB_BEARER_TOKEN missing");
+
+  const url = `https://api.themoviedb.org/3${path}`;
+  const r = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    next: { revalidate: 3600 },
+  });
+
+  const text = await r.text().catch(() => "");
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = { raw: text };
+  }
+
+  return { ok: r.ok, status: r.status, json };
 }
 
-export default async function MoviePage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
+function decodeFrom(sp: SP | undefined) {
+  const fromRaw = Array.isArray(sp?.from) ? sp?.from?.[0] : sp?.from;
+  let from = "/";
+  if (typeof fromRaw === "string" && fromRaw.length > 0) {
+    try {
+      from = decodeURIComponent(fromRaw);
+    } catch {
+      from = fromRaw;
+    }
+  }
+  return from.startsWith("/") ? from : "/";
+}
 
-  const { ok, data } = await tmdb(`movie/${id}`);
-  if (!ok) {
+export default async function MoviePage(props: {
+  params: Promise<{ id: string }> | { id: string };
+  searchParams: Promise<SP> | SP;
+}) {
+  const params = await Promise.resolve(props.params);
+  const searchParams = await Promise.resolve(props.searchParams);
+
+  const safeFrom = decodeFrom(searchParams);
+
+  const m = await tmdbFetch(`/movie/${params.id}?language=tr-TR`);
+
+  if (!m.ok && m.status === 404) {
+    const tv = await tmdbFetch(`/tv/${params.id}?language=tr-TR`);
+    if (tv.ok) redirect(`/tv/${params.id}?from=${encodeURIComponent(safeFrom)}`);
+  }
+
+  if (!m.ok) {
     return (
-      <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
-        <a href="/">← Geri</a>
-        <h1>Hata</h1>
-        <pre style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(data, null, 2)}</pre>
-      </main>
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: 24 }}>
+        <BackToSearchLink href={safeFrom} className="underline">
+          ← Aramaya dön
+        </BackToSearchLink>
+        <h2 style={{ marginTop: 16 }}>Film bulunamadı (TMDB {m.status})</h2>
+        <pre style={{ background: "#f6f6f6", padding: 12, borderRadius: 8, overflow: "auto" }}>
+          {JSON.stringify(m.json, null, 2)}
+        </pre>
+      </div>
     );
   }
 
-  const m = data as MovieDetails;
-  const poster = m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : null;
+  const movie = m.json;
+  const poster = movie?.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null;
 
   return (
-    <main style={{ maxWidth: 900, margin: "40px auto", padding: 16, fontFamily: "system-ui" }}>
-      <a href="/">← Aramaya dön</a>
+    <div style={{ maxWidth: 980, margin: "0 auto", padding: 24 }}>
+      <BackToSearchLink href={safeFrom} className="underline" >
+        ← Aramaya dön
+      </BackToSearchLink>
 
-      <div style={{ display: "flex", gap: 16, marginTop: 16 }}>
-        <div style={{ width: 220 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 24, alignItems: "start", marginTop: 16 }}>
+        <div>
           {poster ? (
-            <img src={poster} alt={m.title} style={{ width: 220, borderRadius: 12 }} />
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={poster} alt={movie?.title ?? "poster"} style={{ width: "100%", borderRadius: 12 }} />
           ) : (
-            <div style={{ width: 220, height: 330, background: "#f2f2f2", borderRadius: 12 }} />
+            <div style={{ width: "100%", aspectRatio: "2/3", background: "#eee", borderRadius: 12 }} />
           )}
         </div>
 
-        <div style={{ flex: 1 }}>
-          <h1 style={{ marginTop: 0 }}>{m.title}</h1>
-          <div style={{ opacity: 0.8 }}>
-            {m.release_date ? `Yıl: ${m.release_date.slice(0, 4)}` : null}
-            {m.runtime ? ` • Süre: ${m.runtime} dk` : null}
+        <div>
+          <h1 style={{ fontSize: 28, margin: 0 }}>{movie?.title}</h1>
+          <div style={{ marginTop: 8, color: "#555" }}>
+            Çıkış: {movie?.release_date || "-"} • Süre: {movie?.runtime ? `${movie.runtime} dk` : "-"}
+          </div>
+          <div style={{ marginTop: 8, color: "#555" }}>
+            Türler: {Array.isArray(movie?.genres) ? movie.genres.map((g: any) => g.name).join(", ") : "-"}
+          </div>
+          <div style={{ marginTop: 8, color: "#555" }}>
+            Puan: {movie?.vote_average?.toFixed?.(1) ?? movie?.vote_average ?? "-"} ({movie?.vote_count ?? "-"} oy)
           </div>
 
-          {m.genres?.length ? (
-            <div style={{ marginTop: 10, fontSize: 14 }}>
-              Türler: {m.genres.map((g) => g.name).join(", ")}
-            </div>
-          ) : null}
-
-          <div style={{ marginTop: 10, fontSize: 14, opacity: 0.9 }}>
-            Puan: {m.vote_average?.toFixed?.(1) ?? m.vote_average ?? "-"} ({m.vote_count ?? 0} oy)
-          </div>
-
-          {m.overview ? (
-            <p style={{ marginTop: 14, lineHeight: 1.5 }}>{m.overview}</p>
-          ) : (
-            <p style={{ marginTop: 14, opacity: 0.7 }}>Özet bilgisi yok.</p>
-          )}
-
-          {m.homepage ? (
-            <p>
-              Resmi site: <a href={m.homepage} target="_blank" rel="noreferrer">{m.homepage}</a>
-            </p>
-          ) : null}
+          {movie?.overview ? <p style={{ marginTop: 16, lineHeight: 1.6 }}>{movie.overview}</p> : null}
         </div>
       </div>
 
-      <footer style={{ marginTop: 40, fontSize: 12, opacity: 0.7 }}>
+      <p style={{ marginTop: 32, fontSize: 12, color: "#777" }}>
         This product uses the TMDb API but is not endorsed or certified by TMDb.
-      </footer>
-    </main>
+      </p>
+    </div>
   );
 }

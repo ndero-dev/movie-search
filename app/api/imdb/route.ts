@@ -1,133 +1,186 @@
 import { NextResponse } from "next/server";
 
-const TMDB_BASE = "https://api.themoviedb.org/3";
+type AnyObj = Record<string, any>;
 
-// memory cache (instance yaşadığı sürece)
-const mem = new Map<string, { ts: number; data: any }>();
-const TTL_MS = 1000 * 60 * 60 * 24; // 24 saat
-
-function getCached(key: string) {
-  const v = mem.get(key);
-  if (!v) return null;
-  if (Date.now() - v.ts > TTL_MS) {
-    mem.delete(key);
-    return null;
+function toIntVotes(v: any): number | null {
+  if (v == null) return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const n = parseInt(v.replace(/[^\d]/g, ""), 10);
+    return Number.isFinite(n) ? n : null;
   }
-  return v.data;
+  return null;
 }
 
-function setCached(key: string, data: any) {
-  mem.set(key, { ts: Date.now(), data });
+function normalizeRatingEntry(entry: any): { rating: number | string; votes?: number | null } | null {
+  if (!entry) return null;
+
+  // entry zaten sayı/string ise
+  if (typeof entry === "number" || typeof entry === "string") {
+    return { rating: entry };
+  }
+
+  // { rating, votes } benzeri
+  const rating =
+    entry.rating ?? entry.value ?? entry.score ?? entry.percent ?? entry.meter ?? entry.average ?? null;
+
+  if (rating == null || rating === "") return null;
+
+  const votes = toIntVotes(entry.votes ?? entry.vote_count ?? entry.count ?? entry.total ?? null);
+  return { rating, votes: votes ?? undefined };
 }
+
+function extractSource(md: AnyObj, key: string) {
+  // 1) md.ratings[key]
+  const a = normalizeRatingEntry(md?.ratings?.[key]);
+  if (a) return a;
+
+  // 2) md.scores[key]
+  const b = normalizeRatingEntry(md?.scores?.[key]);
+  if (b) return b;
+
+  // 3) md[key]
+  const c = normalizeRatingEntry(md?.[key]);
+  if (c) return c;
+
+  // 4) md.ratings array: [{source:"imdb", ...}]
+  const arr = md?.ratings;
+  if (Array.isArray(arr)) {
+    const found = arr.find((x) => String(x?.source ?? x?.name ?? "").toLowerCase() === key.toLowerCase());
+    const d = normalizeRatingEntry(found);
+    if (d) return d;
+  }
+
+  // 5) md.sources array
+  const arr2 = md?.sources;
+  if (Array.isArray(arr2)) {
+    const found = arr2.find((x) => String(x?.source ?? x?.name ?? "").toLowerCase() === key.toLowerCase());
+    const e = normalizeRatingEntry(found);
+    if (e) return e;
+  }
+
+  return null;
+}
+
+function turkceAltyaziUrlFromImdb(imdbId: string) {
+  // tt0412142 -> https://turkcealtyazi.org/mov/0412142/
+  const num = imdbId.replace(/^tt/i, "");
+  if (!num) return null;
+  return `https://turkcealtyazi.org/mov/${num}/`;
+}
+
+function mdblistWebUrl(type: "movie" | "show", mdblistId: string | number) {
+  const idStr = String(mdblistId);
+  // slug gibi ise /show/{slug} çalışabiliyor
+  const looksSlug = /[a-zA-Z\-]/.test(idStr);
+  if (looksSlug) return `https://mdblist.com/${type}/${idStr}`;
+  // numeric gibi ise en stabil: /title/{id}
+  return `https://mdblist.com/title/${idStr}`;
+}
+
+// basit memory cache (serverless’te her zaman kalıcı değil ama işe yarar)
+const g = globalThis as any;
+const CACHE: Map<string, { exp: number; value: any }> =
+  g.__IMDB_ROUTE_CACHE__ ?? (g.__IMDB_ROUTE_CACHE__ = new Map());
 
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+  const url = new URL(req.url);
+  const tmdb_id = url.searchParams.get("tmdb_id");
+  const media_type = url.searchParams.get("media_type"); // movie | tv
 
-  const media_type = searchParams.get("media_type"); // movie | tv
-  const tmdb_id = searchParams.get("tmdb_id");
-
-  if (!media_type || (media_type !== "movie" && media_type !== "tv")) {
-    return NextResponse.json({ error: "media_type must be movie|tv" }, { status: 400 });
-  }
-  if (!tmdb_id || !/^\d+$/.test(tmdb_id)) {
-    return NextResponse.json({ error: "tmdb_id must be numeric" }, { status: 400 });
+  if (!tmdb_id || !media_type || !["movie", "tv"].includes(media_type)) {
+    return NextResponse.json({ error: "tmdb_id and media_type(movie|tv) required" }, { status: 400 });
   }
 
   const cacheKey = `${media_type}:${tmdb_id}`;
-  const cached = getCached(cacheKey);
-  if (cached) return NextResponse.json(cached);
+  const now = Date.now();
+  const cached = CACHE.get(cacheKey);
+  if (cached && cached.exp > now) {
+    return NextResponse.json(cached.value);
+  }
 
-  const tmdbToken = process.env.TMDB_BEARER_TOKEN;
-  if (!tmdbToken) return NextResponse.json({ error: "TMDB_BEARER_TOKEN missing" }, { status: 500 });
+  const TMDB_TOKEN = process.env.TMDB_BEARER_TOKEN;
+  if (!TMDB_TOKEN) {
+    return NextResponse.json({ error: "TMDB_BEARER_TOKEN missing" }, { status: 500 });
+  }
 
-  // 1) TMDb external ids -> imdb_id
-  const extUrl = `${TMDB_BASE}/${media_type}/${tmdb_id}/external_ids`;
+  // 1) TMDB external_ids -> imdb_id
+  const extUrl = `https://api.themoviedb.org/3/${media_type}/${tmdb_id}/external_ids`;
   const extRes = await fetch(extUrl, {
-    headers: { Authorization: `Bearer ${tmdbToken}` },
+    headers: { Authorization: `Bearer ${TMDB_TOKEN}` },
     next: { revalidate: 86400 },
   });
-  const extData = await extRes.json();
 
   if (!extRes.ok) {
-    return NextResponse.json({ error: "tmdb external_ids failed", details: extData }, { status: extRes.status });
+    const t = await extRes.text().catch(() => "");
+    return NextResponse.json({ error: "tmdb external_ids failed", status: extRes.status, body: t }, { status: 502 });
   }
 
-  const imdb_id = (extData?.imdb_id as string | null) ?? null;
+  const ext = (await extRes.json()) as AnyObj;
+  const imdb_id = ext?.imdb_id as string | null;
 
+  // imdb yoksa döndür
   if (!imdb_id) {
-    const out = {
-      imdb_id: null,
-      imdbRating: null,
-      imdbVotes: null,
-      mdblist: null,
-    };
-    setCached(cacheKey, out);
-    return NextResponse.json(out);
+    const payload = { imdb_id: null, imdbRating: null, imdbVotes: null, sources: {}, turkceAltyaziUrl: null, mdblist: null };
+    CACHE.set(cacheKey, { exp: now + 24 * 3600_000, value: payload });
+    return NextResponse.json(payload);
   }
 
-  // 2) MDBList (öncelik)
+  // 2) OMDb IMDb rating/votes
   let imdbRating: string | null = null;
   let imdbVotes: number | null = null;
-  let mdblistId: string | null = null;
-
-  const mdblistKey = process.env.MDBLIST_API_KEY;
-  const mdblistType: "movie" | "show" = media_type === "movie" ? "movie" : "show";
-
-  if (mdblistKey) {
-    const url = `https://api.mdblist.com/imdb/${mdblistType}/${encodeURIComponent(imdb_id)}?apikey=${encodeURIComponent(mdblistKey)}`;
-    const r = await fetch(url, { next: { revalidate: 86400 } });
-    const d = await r.json();
-
-    if (r.ok) {
-      mdblistId = (d?.ids?.mdblist as string | null) ?? null;
-
-      const imdbRatingObj = Array.isArray(d?.ratings)
-        ? d.ratings.find((x: any) => x?.source === "imdb")
-        : null;
-
-      if (imdbRatingObj) {
-        const val = imdbRatingObj?.value;
-        const votes = imdbRatingObj?.votes;
-
-        if (typeof val === "number") imdbRating = val.toFixed(1);
-        else if (typeof val === "string" && val.trim()) imdbRating = val.trim();
-
-        if (typeof votes === "number") imdbVotes = votes;
-        else if (typeof votes === "string" && /^\d+$/.test(votes)) imdbVotes = Number(votes);
-      }
-    }
-  }
-
-  // 3) OMDb fallback (opsiyonel)
-  const omdbKey = process.env.OMDB_API_KEY;
-  if ((!imdbRating || imdbVotes == null) && omdbKey) {
-    const omdbUrl = `https://www.omdbapi.com/?i=${encodeURIComponent(imdb_id)}&apikey=${encodeURIComponent(omdbKey)}`;
+  const OMDB_KEY = process.env.OMDB_API_KEY;
+  if (OMDB_KEY) {
+    const omdbUrl = `https://www.omdbapi.com/?i=${encodeURIComponent(imdb_id)}&apikey=${encodeURIComponent(OMDB_KEY)}`;
     const omdbRes = await fetch(omdbUrl, { next: { revalidate: 86400 } });
-    const omdbData = await omdbRes.json();
-
-    if (omdbRes.ok && omdbData?.Response === "True") {
-      if (!imdbRating && typeof omdbData?.imdbRating === "string" && omdbData.imdbRating !== "N/A") {
-        imdbRating = omdbData.imdbRating;
-      }
-      if (imdbVotes == null && typeof omdbData?.imdbVotes === "string" && omdbData.imdbVotes !== "N/A") {
-        const n = Number(String(omdbData.imdbVotes).replace(/,/g, ""));
-        if (Number.isFinite(n)) imdbVotes = n;
-      }
+    if (omdbRes.ok) {
+      const om = (await omdbRes.json()) as AnyObj;
+      if (om?.imdbRating && om.imdbRating !== "N/A") imdbRating = String(om.imdbRating);
+      if (om?.imdbVotes && om.imdbVotes !== "N/A") imdbVotes = toIntVotes(om.imdbVotes);
     }
   }
 
-  const out = {
+  // 3) MDBList
+  const MDB_KEY = process.env.MDBLIST_API_KEY;
+  const mdType = media_type === "tv" ? "show" : "movie";
+  let md: AnyObj | null = null;
+
+  if (MDB_KEY) {
+    const mdUrl = `https://api.mdblist.com/imdb/${mdType}/${encodeURIComponent(imdb_id)}?apikey=${encodeURIComponent(MDB_KEY)}`;
+    const mdRes = await fetch(mdUrl, { next: { revalidate: 86400 } });
+    if (mdRes.ok) {
+      md = (await mdRes.json()) as AnyObj;
+    }
+  }
+
+  const mdblistId = (md?.ids?.mdblist ?? md?.id ?? null) as string | number | null;
+  const mdblistUrl = mdblistId ? mdblistWebUrl(mdType as "movie" | "show", mdblistId) : null;
+
+  // Kaynakları normalize et
+  const sources = {
+    // istediklerin:
+    mdblist: extractSource(md ?? {}, "mdblist"),
+    tomatoes: extractSource(md ?? {}, "tomatoes"),
+    popcorn: extractSource(md ?? {}, "popcorn"),
+    metacritic: extractSource(md ?? {}, "metacritic"),
+    metacriticuser: extractSource(md ?? {}, "metacriticuser"),
+    trakt: extractSource(md ?? {}, "trakt"),
+    letterboxd: extractSource(md ?? {}, "letterboxd"),
+    rogerebert: extractSource(md ?? {}, "rogerebert"),
+    myanimelist: extractSource(md ?? {}, "myanimelist"),
+  };
+
+  const payload = {
     imdb_id,
     imdbRating,
     imdbVotes,
-    mdblist: mdblistKey
-      ? {
-          id: mdblistId,        // ör: "583" veya "c5cd"
-          type: mdblistType,    // "movie" | "show"
-        }
+    turkceAltyaziUrl: turkceAltyaziUrlFromImdb(imdb_id),
+    mdblist: mdblistId
+      ? { id: mdblistId, type: mdType, url: mdblistUrl }
       : null,
+    sources,
   };
 
-  setCached(cacheKey, out);
-  return NextResponse.json(out);
+  CACHE.set(cacheKey, { exp: now + 24 * 3600_000, value: payload });
+  return NextResponse.json(payload);
 }
