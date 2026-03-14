@@ -179,26 +179,8 @@ async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?
     };
   }
 
-  let imdbRating: number | null = null;
-  let imdbVotes: number | null = null;
   let md: AnyObj | null = null;
-
-  const OMDB_KEY = process.env.OMDB_API_KEY;
   const MDB_KEY = process.env.MDBLIST_API_KEY;
-
-  if (OMDB_KEY) {
-    try {
-      const omdbUrl = `https://www.omdbapi.com/?i=${encodeURIComponent(imdb_id)}&apikey=${encodeURIComponent(
-        OMDB_KEY
-      )}`;
-      const omdbRes = await fetch(omdbUrl, { next: { revalidate: 86400 } });
-      if (omdbRes.ok) {
-        const om = (await omdbRes.json()) as AnyObj;
-        if (om?.imdbRating && om.imdbRating !== "N/A") imdbRating = toNumberRating(om.imdbRating);
-        if (om?.imdbVotes && om.imdbVotes !== "N/A") imdbVotes = toIntVotes(om.imdbVotes);
-      }
-    } catch {}
-  }
 
   if (MDB_KEY) {
     try {
@@ -225,12 +207,8 @@ async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?
     myanimelist: extractSource(md ?? {}, "myanimelist"),
   };
 
-  if (imdbRating == null && sources.imdb?.rating != null) {
-    imdbRating = toNumberRating(sources.imdb.rating);
-  }
-  if (imdbVotes == null && sources.imdb?.votes != null) {
-    imdbVotes = toIntVotes(sources.imdb.votes);
-  }
+  const imdbRating = sources.imdb?.rating != null ? toNumberRating(sources.imdb.rating) : null;
+  const imdbVotes = sources.imdb?.votes != null ? toIntVotes(sources.imdb.votes) : null;
 
   const mdblistId = (md?.ids?.mdblist ?? md?.id ?? null) as string | number | null;
   const mdblistUrl = mdblistId ? mdblistWebUrl("show", mdblistId, title) : null;

@@ -137,16 +137,6 @@ function mdblistWebUrl(type: "movie" | "show", mdblistId: string | number, title
 
 async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?: string | null) {
   const TMDB_TOKEN = process.env.TMDB_BEARER_TOKEN;
-  if (!TMDB_TOKEN) {
-    return {
-      imdb_id: null,
-      imdbRating: null,
-      imdbVotes: null,
-      turkceAltyaziUrl: null,
-      mdblist: null,
-      sources: {},
-    };
-  }
 
   const extUrl = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}/external_ids`;
   const extRes = await fetch(extUrl, {
@@ -179,32 +169,12 @@ async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?
     };
   }
 
-  let imdbRating: number | null = null;
-  let imdbVotes: number | null = null;
   let md: AnyObj | null = null;
-
-  const OMDB_KEY = process.env.OMDB_API_KEY;
   const MDB_KEY = process.env.MDBLIST_API_KEY;
-
-  if (OMDB_KEY) {
-    try {
-      const omdbUrl = `https://www.omdbapi.com/?i=${encodeURIComponent(imdb_id)}&apikey=${encodeURIComponent(
-        OMDB_KEY
-      )}`;
-      const omdbRes = await fetch(omdbUrl, { next: { revalidate: 86400 } });
-      if (omdbRes.ok) {
-        const om = (await omdbRes.json()) as AnyObj;
-        if (om?.imdbRating && om.imdbRating !== "N/A") imdbRating = toNumberRating(om.imdbRating);
-        if (om?.imdbVotes && om.imdbVotes !== "N/A") imdbVotes = toIntVotes(om.imdbVotes);
-      }
-    } catch {}
-  }
 
   if (MDB_KEY) {
     try {
-      const mdUrl = `https://api.mdblist.com/imdb/movie/${encodeURIComponent(
-        imdb_id
-      )}?apikey=${encodeURIComponent(MDB_KEY)}`;
+      const mdUrl = `https://api.mdblist.com/imdb/movie/${encodeURIComponent(imdb_id)}?apikey=${encodeURIComponent(MDB_KEY)}`;
       const mdRes = await fetch(mdUrl, { next: { revalidate: 86400 } });
       if (mdRes.ok) {
         md = (await mdRes.json()) as AnyObj;
@@ -218,19 +188,11 @@ async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?
     tomatoes: extractSource(md ?? {}, "tomatoes"),
     popcorn: extractSource(md ?? {}, "popcorn"),
     metacritic: extractSource(md ?? {}, "metacritic"),
-    metacriticuser: extractSource(md ?? {}, "metacriticuser"),
     trakt: extractSource(md ?? {}, "trakt"),
-    letterboxd: extractSource(md ?? {}, "letterboxd"),
-    rogerebert: extractSource(md ?? {}, "rogerebert"),
-    myanimelist: extractSource(md ?? {}, "myanimelist"),
   };
 
-  if (imdbRating == null && sources.imdb?.rating != null) {
-    imdbRating = toNumberRating(sources.imdb.rating);
-  }
-  if (imdbVotes == null && sources.imdb?.votes != null) {
-    imdbVotes = toIntVotes(sources.imdb.votes);
-  }
+  const imdbRating = sources.imdb?.rating ? toNumberRating(sources.imdb.rating) : null;
+  const imdbVotes = sources.imdb?.votes ? toIntVotes(sources.imdb.votes) : null;
 
   const mdblistId = (md?.ids?.mdblist ?? md?.id ?? null) as string | number | null;
   const mdblistUrl = mdblistId ? mdblistWebUrl("movie", mdblistId, title) : null;
@@ -245,11 +207,7 @@ async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?
   };
 }
 
-function ratingBox(
-  label: string,
-  value?: string | number | null,
-  votes?: string | number | null
-) {
+function ratingBox(label: string, value?: string | number | null, votes?: string | number | null) {
   if (value == null || value === "" || value === "N/A") return null;
 
   return (
@@ -259,132 +217,6 @@ function ratingBox(
         {value}
         {votes != null && votes !== "" ? ` (${votes})` : ""}
       </div>
-    </div>
-  );
-}
-
-export default async function MoviePage(props: {
-  params: Promise<{ id: string }> | { id: string };
-  searchParams: Promise<SP> | SP;
-}) {
-  const params = await Promise.resolve(props.params);
-  const searchParams = await Promise.resolve(props.searchParams);
-
-  const safeFrom = decodeFrom(searchParams);
-
-  const m = await tmdbFetch(`/movie/${params.id}?language=tr-TR`);
-
-  if (!m.ok && m.status === 404) {
-    const t = await tmdbFetch(`/tv/${params.id}?language=tr-TR`);
-    if (t.ok) redirect(`/tv/${params.id}?from=${encodeURIComponent(safeFrom)}`);
-  }
-
-  if (!m.ok) {
-    return (
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24 }}>
-        <BackToSearchLink href={safeFrom} className="underline">
-          ← Aramaya dön
-        </BackToSearchLink>
-
-        <h2 style={{ marginTop: 16 }}>Film bulunamadı (TMDB {m.status})</h2>
-        <pre style={{ background: "#f6f6f6", padding: 12, borderRadius: 8, overflow: "auto" }}>
-          {JSON.stringify(m.json, null, 2)}
-        </pre>
-      </div>
-    );
-  }
-
-  const movie = m.json;
-  const poster = movie?.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null;
-  const extra = await getExtraRatings("movie", params.id, movie?.title ?? null);
-
-  return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24 }}>
-      <BackToSearchLink href={safeFrom} className="underline">
-        ← Aramaya dön
-      </BackToSearchLink>
-
-      <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-[320px_1fr]">
-        <div>
-          {poster ? (
-            <img
-              src={poster}
-              alt={movie?.title ?? "poster"}
-              className="block w-full rounded-2xl"
-            />
-          ) : (
-            <div className="w-full rounded-2xl bg-zinc-200" style={{ aspectRatio: "2/3" }} />
-          )}
-
-          <div className="mt-4 space-y-2 text-sm">
-            {extra.turkceAltyaziUrl ? (
-              <div>
-                TürkçeAltyazı:{" "}
-                <a className="underline" href={extra.turkceAltyaziUrl} target="_blank" rel="noreferrer">
-                  link
-                </a>
-              </div>
-            ) : null}
-
-            {extra.mdblist?.url ? (
-              <div>
-                MDBList:{" "}
-                <a className="underline" href={extra.mdblist.url} target="_blank" rel="noreferrer">
-                  link
-                </a>
-              </div>
-            ) : null}
-
-            {movie?.homepage ? (
-              <div>
-                Resmi site:{" "}
-                <a className="underline break-all" href={movie.homepage} target="_blank" rel="noreferrer">
-                  {movie.homepage}
-                </a>
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        <div>
-          <h1 className="text-3xl font-semibold leading-tight md:text-4xl">
-            {movie?.title}
-          </h1>
-
-          <div className="mt-3 space-y-2 text-zinc-600">
-            <div>
-              Çıkış: {movie?.release_date || "-"} • Süre: {movie?.runtime ? `${movie.runtime} dk` : "-"}
-            </div>
-            <div>
-              Türler: {Array.isArray(movie?.genres) ? movie.genres.map((g: any) => g.name).join(", ") : "-"}
-            </div>
-          </div>
-
-          <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3">
-            {ratingBox("IMDb", extra.imdbRating, extra.imdbVotes)}
-            {ratingBox(
-              "TMDB",
-              movie?.vote_average?.toFixed?.(1) ?? movie?.vote_average ?? null,
-              movie?.vote_count ?? null
-            )}
-            {ratingBox("Trakt", extra.sources?.trakt?.rating ?? null, extra.sources?.trakt?.votes ?? null)}
-            {ratingBox("Tomatoes", extra.sources?.tomatoes?.rating ?? null, extra.sources?.tomatoes?.votes ?? null)}
-            {ratingBox("Popcorn", extra.sources?.popcorn?.rating ?? null, extra.sources?.popcorn?.votes ?? null)}
-            {ratingBox("Metacritic", extra.sources?.metacritic?.rating ?? null, extra.sources?.metacritic?.votes ?? null)}
-          </div>
-
-          {movie?.overview ? (
-            <div className="mt-6">
-              <h2 className="mb-2 text-lg font-semibold">Özet</h2>
-              <p className="text-base leading-8 text-zinc-800">{movie.overview}</p>
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <p className="mt-10 text-xs text-zinc-500">
-        This product uses the TMDb API but is not endorsed or certified by TMDb.
-      </p>
     </div>
   );
 }

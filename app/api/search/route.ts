@@ -21,7 +21,7 @@ type EnrichedItem = Item & {
   imdbVotes: number | null;
   sources?: Record<string, any>;
   turkceAltyaziUrl?: string | null;
-  mdblist?: null;
+  mdblist?: { id: string | number; type: "movie" | "show"; url: string | null } | null;
 };
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -70,7 +70,35 @@ function turkceAltyaziUrlFromImdb(imdbId: string) {
   return `https://turkcealtyazi.org/mov/${num}/`;
 }
 
-async function tmdbFetch(path: string, qs?: Record<string, string | number | undefined>) {
+function slugifyTitle(input: string) {
+  return input
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+function mdblistWebUrl(
+  type: "movie" | "show",
+  mdblistId: string | number,
+  title?: string | null
+) {
+  const idStr = String(mdblistId);
+
+  const looksSlug = /[a-zA-Z\-]/.test(idStr);
+  if (looksSlug) return `https://mdblist.com/${type}/${idStr}`;
+
+  if (title) {
+    const s = slugifyTitle(title);
+    if (s) return `https://mdblist.com/${type}/${idStr}-${s}`;
+  }
+
+  return `https://mdblist.com/title/${idStr}`;
+}
+
+async function tmdbFetch(path: string, qs?: Record<string, any>) {
   const token = process.env.TMDB_BEARER_TOKEN;
   if (!token) throw new Error("TMDB_BEARER_TOKEN missing");
 
@@ -147,25 +175,88 @@ function applyBaseFilters(
   });
 }
 
-function dedupeItems<T extends { media_type: MediaType; id: number }>(list: T[]) {
+function dedupeItems<T extends { id: number; media_type: MediaType }>(list: T[]) {
   const seen = new Set<string>();
   const out: T[] = [];
+
   for (const x of list) {
     const k = `${x.media_type}:${x.id}`;
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(x);
   }
+
   return out;
 }
 
+function normalizeRatingEntry(
+  entry: any
+): { rating: number | string; votes?: number | null } | null {
+  if (!entry) return null;
+
+  if (typeof entry === "number" || typeof entry === "string") {
+    return { rating: entry };
+  }
+
+  const rating =
+    entry.rating ??
+    entry.value ??
+    entry.score ??
+    entry.percent ??
+    entry.meter ??
+    entry.average ??
+    null;
+
+  if (rating == null || rating === "") return null;
+
+  const votes = toIntVotes(
+    entry.votes ?? entry.vote_count ?? entry.count ?? entry.total ?? null
+  );
+
+  return { rating, votes: votes ?? undefined };
+}
+
+function extractSource(md: AnyObj, key: string) {
+  const a = normalizeRatingEntry(md?.ratings?.[key]);
+  if (a) return a;
+
+  const b = normalizeRatingEntry(md?.scores?.[key]);
+  if (b) return b;
+
+  const c = normalizeRatingEntry(md?.[key]);
+  if (c) return c;
+
+  const arr = md?.ratings;
+  if (Array.isArray(arr)) {
+    const found = arr.find(
+      (x) => String(x?.source ?? x?.name ?? "").toLowerCase() === key.toLowerCase()
+    );
+    const d = normalizeRatingEntry(found);
+    if (d) return d;
+  }
+
+  const arr2 = md?.sources;
+  if (Array.isArray(arr2)) {
+    const found = arr2.find(
+      (x) => String(x?.source ?? x?.name ?? "").toLowerCase() === key.toLowerCase()
+    );
+    const e = normalizeRatingEntry(found);
+    if (e) return e;
+  }
+
+  return null;
+}
+
 const g = globalThis as any;
-const ENRICH_CACHE: Map<string, { exp: number; value: any }> =
-  g.__SEARCH_ENRICH_CACHE__ ?? (g.__SEARCH_ENRICH_CACHE__ = new Map());
+const ENRICH_CACHE: Map<
+  string,
+  { exp: number; value: Omit<EnrichedItem, keyof Item> }
+> = g.__SEARCH_ENRICH_CACHE__ ?? (g.__SEARCH_ENRICH_CACHE__ = new Map());
 
 async function enrichOne(item: Item): Promise<EnrichedItem> {
   const cacheKey = `${item.media_type}:${item.id}`;
   const now = Date.now();
+
   const cached = ENRICH_CACHE.get(cacheKey);
   if (cached && cached.exp > now) {
     return { ...item, ...cached.value };
@@ -206,43 +297,81 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
       turkceAltyaziUrl: null,
       mdblist: null,
     };
-    ENRICH_CACHE.set(cacheKey, { exp: now + 24 * 3600_000, value: payload });
+
+    ENRICH_CACHE.set(cacheKey, {
+      exp: now + 24 * 3600_000,
+      value: payload,
+    });
+
     return { ...item, ...payload };
   }
 
-  let imdbRating: number | null = null;
-  let imdbVotes: number | null = null;
+  let md: AnyObj | null = null;
+  const MDB_KEY = process.env.MDBLIST_API_KEY;
 
-  const OMDB_KEY = process.env.OMDB_API_KEY;
-
-  if (OMDB_KEY) {
+  if (MDB_KEY) {
     try {
-      const omdbUrl = `https://www.omdbapi.com/?i=${encodeURIComponent(imdb_id)}&apikey=${encodeURIComponent(
-        OMDB_KEY
-      )}`;
-      const omdbRes = await fetch(omdbUrl, { next: { revalidate: 86400 } });
+      const mdType = item.media_type === "movie" ? "movie" : "show";
+      const mdUrl = `https://api.mdblist.com/imdb/${mdType}/${encodeURIComponent(
+        imdb_id
+      )}?apikey=${encodeURIComponent(MDB_KEY)}`;
 
-      if (omdbRes.ok) {
-        const om = (await omdbRes.json()) as AnyObj;
-        if (om?.imdbRating && om.imdbRating !== "N/A") {
-          imdbRating = toNumberRating(om.imdbRating);
-        }
-        if (om?.imdbVotes && om.imdbVotes !== "N/A") {
-          imdbVotes = toIntVotes(om.imdbVotes);
-        }
+      const mdRes = await fetch(mdUrl, {
+        next: { revalidate: 86400 },
+      });
+
+      if (mdRes.ok) {
+        md = (await mdRes.json()) as AnyObj;
       }
     } catch {}
   }
 
+  const sources = {
+    imdb: extractSource(md ?? {}, "imdb"),
+    mdblist: extractSource(md ?? {}, "mdblist"),
+    tomatoes: extractSource(md ?? {}, "tomatoes"),
+    popcorn: extractSource(md ?? {}, "popcorn"),
+    metacritic: extractSource(md ?? {}, "metacritic"),
+    metacriticuser: extractSource(md ?? {}, "metacriticuser"),
+    trakt: extractSource(md ?? {}, "trakt"),
+    letterboxd: extractSource(md ?? {}, "letterboxd"),
+    rogerebert: extractSource(md ?? {}, "rogerebert"),
+    myanimelist: extractSource(md ?? {}, "myanimelist"),
+  };
+
+  const imdbRating =
+    sources.imdb?.rating != null ? toNumberRating(sources.imdb.rating) : null;
+  const imdbVotes =
+    sources.imdb?.votes != null ? toIntVotes(sources.imdb.votes) : null;
+
+  const mdblistId = (md?.ids?.mdblist ?? md?.id ?? null) as
+    | string
+    | number
+    | null;
+
+  const mdblistUrl = mdblistId
+    ? mdblistWebUrl(item.media_type === "movie" ? "movie" : "show", mdblistId, item.title)
+    : null;
+
   const payload = {
     imdbRating,
     imdbVotes,
-    sources: {},
+    sources,
     turkceAltyaziUrl: turkceAltyaziUrlFromImdb(imdb_id),
-    mdblist: null,
+    mdblist: mdblistId
+      ? {
+          id: mdblistId,
+          type: item.media_type === "movie" ? "movie" : "show",
+          url: mdblistUrl,
+        }
+      : null,
   };
 
-  ENRICH_CACHE.set(cacheKey, { exp: now + 24 * 3600_000, value: payload });
+  ENRICH_CACHE.set(cacheKey, {
+    exp: now + 24 * 3600_000,
+    value: payload,
+  });
+
   return { ...item, ...payload };
 }
 
@@ -329,6 +458,7 @@ export async function GET(req: Request) {
                 with_genres: genreMovie || undefined,
               })
             : Promise.resolve({ ok: true, status: 200, json: null }),
+
           wantTv
             ? tmdbFetch("discover/tv", {
                 ...common,
@@ -349,9 +479,13 @@ export async function GET(req: Request) {
         const mItems = m.json ? normalizeResults(m.json?.results ?? [], "movie") : [];
         const tItems = t.json ? normalizeResults(t.json?.results ?? [], "tv") : [];
 
-        merged = applyBaseFilters([...mItems, ...tItems], type, year, genreMovie, genreTv).sort(
-          (a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1)
-        );
+        merged = applyBaseFilters(
+          [...mItems, ...tItems],
+          type,
+          year,
+          genreMovie,
+          genreTv
+        ).sort((a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1));
 
         totalPages = Math.max(m.json?.total_pages ?? 1, t.json?.total_pages ?? 1);
       }
@@ -366,10 +500,12 @@ export async function GET(req: Request) {
           if (x.imdbRating == null) return false;
           if (x.imdbRating < minR) return false;
         }
+
         if (minV != null) {
           if (x.imdbVotes == null) return false;
           if (x.imdbVotes < minV) return false;
         }
+
         return true;
       });
 
@@ -377,7 +513,10 @@ export async function GET(req: Request) {
         (a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1)
       );
 
-      collected = dedupeItems([...collected, ...sortedFiltered]).slice(0, TARGET_BATCH_SIZE);
+      collected = dedupeItems([...collected, ...sortedFiltered]).slice(
+        0,
+        TARGET_BATCH_SIZE
+      );
 
       sourcePage += 1;
     }
