@@ -4,6 +4,33 @@ import { redirect } from "next/navigation";
 type SP = { from?: string | string[] };
 type AnyObj = Record<string, any>;
 
+type RatingSource = {
+  rating: number | string;
+  votes?: number | null;
+};
+
+type ExtraSources = {
+  imdb?: RatingSource | null;
+  mdblist?: RatingSource | null;
+  tomatoes?: RatingSource | null;
+  popcorn?: RatingSource | null;
+  metacritic?: RatingSource | null;
+  metacriticuser?: RatingSource | null;
+  trakt?: RatingSource | null;
+  letterboxd?: RatingSource | null;
+  rogerebert?: RatingSource | null;
+  myanimelist?: RatingSource | null;
+};
+
+type ExtraRatingsResult = {
+  imdb_id: string | null;
+  imdbRating: number | null;
+  imdbVotes: number | null;
+  turkceAltyaziUrl: string | null;
+  mdblist: { id: string | number; type: "movie" | "show"; url: string | null } | null;
+  sources: ExtraSources;
+};
+
 async function tmdbFetch(path: string) {
   const token = process.env.TMDB_BEARER_TOKEN;
   if (!token) throw new Error("TMDB_BEARER_TOKEN missing");
@@ -54,10 +81,12 @@ function toNumberRating(v: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function normalizeRatingEntry(entry: any): { rating: number | string; votes?: number | null } | null {
+function normalizeRatingEntry(entry: any): RatingSource | null {
   if (!entry) return null;
 
-  if (typeof entry === "number" || typeof entry === "string") return { rating: entry };
+  if (typeof entry === "number" || typeof entry === "string") {
+    return { rating: entry };
+  }
 
   const rating =
     entry.rating ??
@@ -74,7 +103,7 @@ function normalizeRatingEntry(entry: any): { rating: number | string; votes?: nu
   return { rating, votes: votes ?? undefined };
 }
 
-function extractSource(md: AnyObj, key: string) {
+function extractSource(md: AnyObj, key: string): RatingSource | null {
   const a = normalizeRatingEntry(md?.ratings?.[key]);
   if (a) return a;
 
@@ -135,7 +164,11 @@ function mdblistWebUrl(type: "movie" | "show", mdblistId: string | number, title
   return `https://mdblist.com/title/${idStr}`;
 }
 
-async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?: string | null) {
+async function getExtraRatings(
+  mediaType: "movie" | "tv",
+  tmdbId: string,
+  title?: string | null
+): Promise<ExtraRatingsResult> {
   const TMDB_TOKEN = process.env.TMDB_BEARER_TOKEN;
   if (!TMDB_TOKEN) {
     return {
@@ -144,7 +177,7 @@ async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?
       imdbVotes: null,
       turkceAltyaziUrl: null,
       mdblist: null,
-      sources: {},
+      sources: {} as ExtraSources,
     };
   }
 
@@ -161,7 +194,7 @@ async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?
       imdbVotes: null,
       turkceAltyaziUrl: null,
       mdblist: null,
-      sources: {},
+      sources: {} as ExtraSources,
     };
   }
 
@@ -175,7 +208,7 @@ async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?
       imdbVotes: null,
       turkceAltyaziUrl: null,
       mdblist: null,
-      sources: {},
+      sources: {} as ExtraSources,
     };
   }
 
@@ -194,7 +227,7 @@ async function getExtraRatings(mediaType: "movie" | "tv", tmdbId: string, title?
     } catch {}
   }
 
-  const sources = {
+  const sources: ExtraSources = {
     imdb: extractSource(md ?? {}, "imdb"),
     mdblist: extractSource(md ?? {}, "mdblist"),
     tomatoes: extractSource(md ?? {}, "tomatoes"),
@@ -346,10 +379,10 @@ export default async function TvPage(props: {
               tv?.vote_average?.toFixed?.(1) ?? tv?.vote_average ?? null,
               tv?.vote_count ?? null
             )}
-            {ratingBox("Trakt", extra.sources?.trakt?.rating ?? null, extra.sources?.trakt?.votes ?? null)}
-            {ratingBox("Tomatoes", extra.sources?.tomatoes?.rating ?? null, extra.sources?.tomatoes?.votes ?? null)}
-            {ratingBox("Popcorn", extra.sources?.popcorn?.rating ?? null, extra.sources?.popcorn?.votes ?? null)}
-            {ratingBox("Metacritic", extra.sources?.metacritic?.rating ?? null, extra.sources?.metacritic?.votes ?? null)}
+            {ratingBox("Trakt", extra.sources.trakt?.rating ?? null, extra.sources.trakt?.votes ?? null)}
+            {ratingBox("Tomatoes", extra.sources.tomatoes?.rating ?? null, extra.sources.tomatoes?.votes ?? null)}
+            {ratingBox("Popcorn", extra.sources.popcorn?.rating ?? null, extra.sources.popcorn?.votes ?? null)}
+            {ratingBox("Metacritic", extra.sources.metacritic?.rating ?? null, extra.sources.metacritic?.votes ?? null)}
           </div>
 
           {tv?.overview ? (

@@ -3,6 +3,30 @@ import { NextResponse } from "next/server";
 type MediaType = "movie" | "tv";
 type AnyObj = Record<string, any>;
 
+type RatingSource = {
+  rating: number | string;
+  votes?: number | null;
+};
+
+type ExtraSources = {
+  imdb?: RatingSource | null;
+  mdblist?: RatingSource | null;
+  tomatoes?: RatingSource | null;
+  popcorn?: RatingSource | null;
+  metacritic?: RatingSource | null;
+  metacriticuser?: RatingSource | null;
+  trakt?: RatingSource | null;
+  letterboxd?: RatingSource | null;
+  rogerebert?: RatingSource | null;
+  myanimelist?: RatingSource | null;
+};
+
+type MdblistLink = {
+  id: string | number;
+  type: "movie" | "show";
+  url: string | null;
+};
+
 type Item = {
   id: number;
   media_type: MediaType;
@@ -19,9 +43,17 @@ type Item = {
 type EnrichedItem = Item & {
   imdbRating: number | null;
   imdbVotes: number | null;
-  sources?: Record<string, any>;
-  turkceAltyaziUrl?: string | null;
-  mdblist?: { id: string | number; type: "movie" | "show"; url: string | null } | null;
+  sources: ExtraSources;
+  turkceAltyaziUrl: string | null;
+  mdblist: MdblistLink | null;
+};
+
+type EnrichedExtra = {
+  imdbRating: number | null;
+  imdbVotes: number | null;
+  sources: ExtraSources;
+  turkceAltyaziUrl: string | null;
+  mdblist: MdblistLink | null;
 };
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
@@ -189,9 +221,7 @@ function dedupeItems<T extends { id: number; media_type: MediaType }>(list: T[])
   return out;
 }
 
-function normalizeRatingEntry(
-  entry: any
-): { rating: number | string; votes?: number | null } | null {
+function normalizeRatingEntry(entry: any): RatingSource | null {
   if (!entry) return null;
 
   if (typeof entry === "number" || typeof entry === "string") {
@@ -216,7 +246,7 @@ function normalizeRatingEntry(
   return { rating, votes: votes ?? undefined };
 }
 
-function extractSource(md: AnyObj, key: string) {
+function extractSource(md: AnyObj, key: string): RatingSource | null {
   const a = normalizeRatingEntry(md?.ratings?.[key]);
   if (a) return a;
 
@@ -248,10 +278,8 @@ function extractSource(md: AnyObj, key: string) {
 }
 
 const g = globalThis as any;
-const ENRICH_CACHE: Map<
-  string,
-  { exp: number; value: Omit<EnrichedItem, keyof Item> }
-> = g.__SEARCH_ENRICH_CACHE__ ?? (g.__SEARCH_ENRICH_CACHE__ = new Map());
+const ENRICH_CACHE: Map<string, { exp: number; value: EnrichedExtra }> =
+  g.__SEARCH_ENRICH_CACHE__ ?? (g.__SEARCH_ENRICH_CACHE__ = new Map());
 
 async function enrichOne(item: Item): Promise<EnrichedItem> {
   const cacheKey = `${item.media_type}:${item.id}`;
@@ -264,14 +292,14 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
 
   const TMDB_TOKEN = process.env.TMDB_BEARER_TOKEN;
   if (!TMDB_TOKEN) {
-    return {
-      ...item,
+    const payload: EnrichedExtra = {
       imdbRating: null,
       imdbVotes: null,
-      sources: {},
+      sources: {} as ExtraSources,
       turkceAltyaziUrl: null,
       mdblist: null,
     };
+    return { ...item, ...payload };
   }
 
   let imdb_id: string | null = null;
@@ -290,10 +318,10 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
   } catch {}
 
   if (!imdb_id) {
-    const payload = {
+    const payload: EnrichedExtra = {
       imdbRating: null,
       imdbVotes: null,
-      sources: {},
+      sources: {} as ExtraSources,
       turkceAltyaziUrl: null,
       mdblist: null,
     };
@@ -311,7 +339,7 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
 
   if (MDB_KEY) {
     try {
-      const mdType = item.media_type === "movie" ? "movie" : "show";
+      const mdType: "movie" | "show" = item.media_type === "movie" ? "movie" : "show";
       const mdUrl = `https://api.mdblist.com/imdb/${mdType}/${encodeURIComponent(
         imdb_id
       )}?apikey=${encodeURIComponent(MDB_KEY)}`;
@@ -326,7 +354,7 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
     } catch {}
   }
 
-  const sources = {
+  const sources: ExtraSources = {
     imdb: extractSource(md ?? {}, "imdb"),
     mdblist: extractSource(md ?? {}, "mdblist"),
     tomatoes: extractSource(md ?? {}, "tomatoes"),
@@ -349,11 +377,14 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
     | number
     | null;
 
+  const mdblistType: "movie" | "show" =
+    item.media_type === "movie" ? "movie" : "show";
+
   const mdblistUrl = mdblistId
-    ? mdblistWebUrl(item.media_type === "movie" ? "movie" : "show", mdblistId, item.title)
+    ? mdblistWebUrl(mdblistType, mdblistId, item.title)
     : null;
 
-  const payload = {
+  const payload: EnrichedExtra = {
     imdbRating,
     imdbVotes,
     sources,
@@ -361,7 +392,7 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
     mdblist: mdblistId
       ? {
           id: mdblistId,
-          type: item.media_type === "movie" ? "movie" : "show",
+          type: mdblistType,
           url: mdblistUrl,
         }
       : null,
