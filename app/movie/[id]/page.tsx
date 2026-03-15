@@ -45,8 +45,8 @@ function providerIcons(items: WatchProviderItem[] = []) {
   if (!items.length) return null;
 
   return (
-    <div className="mt-4">
-      <div className="flex flex-wrap gap-3">
+    <div className="mt-6 flex justify-center">
+      <div className="flex flex-wrap justify-center gap-6">
         {items.map((item) => (
           <div
             key={item.provider_id}
@@ -65,7 +65,8 @@ function providerIcons(items: WatchProviderItem[] = []) {
                 N/A
               </div>
             )}
-            <div className="mt-1 line-clamp-2 text-xs text-zinc-700">
+
+            <div className="mt-1 text-xs text-zinc-700 text-center">
               {item.provider_name}
             </div>
           </div>
@@ -139,60 +140,7 @@ export default async function MoviePage(props: {
             <div className="w-full rounded-2xl bg-zinc-200" style={{ aspectRatio: "2/3" }} />
           )}
 
-          <div className="mt-4 space-y-2 text-sm">
-            {extra.turkceAltyaziUrl ? (
-              <div>
-                <a
-                  className="underline"
-                  href={extra.turkceAltyaziUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  TrAltOrg
-                </a>
-              </div>
-            ) : null}
-
-            {extra.mdblist?.url ? (
-              <div>
-                <a
-                  className="underline"
-                  href={extra.mdblist.url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  MDBList
-                </a>
-              </div>
-            ) : null}
-
-            {movie?.homepage ? (
-              <div>
-                <a
-                  className="underline break-all"
-                  href={movie.homepage}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Resmi site
-                </a>
-              </div>
-            ) : null}
-
-            {extra.watchProviders?.results?.link ? (
-              <div>
-                <a
-                  className="underline"
-                  href={extra.watchProviders.results.link}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  TMDB
-                </a>
-              </div>
-            ) : null}
-          </div>
-
+          
           {providerIcons(extra.watchProviders?.results?.flatrate ?? [])}
         </div>
 
@@ -229,6 +177,51 @@ export default async function MoviePage(props: {
               <p className="text-base leading-8 text-zinc-800">{movie.overview}</p>
             </div>
           ) : null}
+          <div className="mt-4 flex flex-wrap gap-4 text-sm text-blue-600">
+          {extra.turkceAltyaziUrl ? (
+          <a
+          href={extra.turkceAltyaziUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="hover:text-blue-800"
+          >
+          TrOrg
+          </a>
+          ) : null}
+
+          {extra.mdblist?.url ? (
+          <a
+          href={extra.mdblist.url}
+          target="_blank"
+          rel="noreferrer"
+          className="hover:text-blue-800"
+          >
+          MDBList
+          </a>
+          ) : null}
+
+          {movie?.homepage ? (
+          <a
+          href={movie.homepage}
+          target="_blank"
+          rel="noreferrer"
+          className="hover:text-blue-800"
+          >
+          Official
+          </a>
+          ) : null}
+
+          {extra.watchProviders?.results?.link ? (
+          <a
+          href={extra.watchProviders.results.link}
+          target="_blank"
+          rel="noreferrer"
+          className="hover:text-blue-800"
+          >
+          TMDB
+          </a>
+          ) : null}
+          </div>
         </div>
       </div>
     </div>
