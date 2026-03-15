@@ -11,7 +11,6 @@ type SP = { from?: string | string[] };
 function decodeFrom(sp: SP | undefined) {
   const fromRaw = Array.isArray(sp?.from) ? sp?.from?.[0] : sp?.from;
   let from = "/";
-
   if (typeof fromRaw === "string" && fromRaw.length > 0) {
     try {
       from = decodeURIComponent(fromRaw);
@@ -19,7 +18,6 @@ function decodeFrom(sp: SP | undefined) {
       from = fromRaw;
     }
   }
-
   return from.startsWith("/") ? from : "/";
 }
 
@@ -100,6 +98,7 @@ export default async function MoviePage(props: {
         </BackToSearchLink>
 
         <h2 style={{ marginTop: 16 }}>Film bulunamadı (TMDB {m.status})</h2>
+
         <pre style={{ background: "#f6f6f6", padding: 12, borderRadius: 8, overflow: "auto" }}>
           {JSON.stringify(m.json, null, 2)}
         </pre>
@@ -108,6 +107,7 @@ export default async function MoviePage(props: {
   }
 
   const movie = m.json;
+
   const poster = movie?.poster_path
     ? `https://image.tmdb.org/t/p/w500${movie.poster_path}`
     : null;
@@ -140,7 +140,6 @@ export default async function MoviePage(props: {
             <div className="w-full rounded-2xl bg-zinc-200" style={{ aspectRatio: "2/3" }} />
           )}
 
-          
           {providerIcons(extra.watchProviders?.results?.flatrate ?? [])}
         </div>
 
@@ -151,8 +150,9 @@ export default async function MoviePage(props: {
 
           <div className="mt-3 space-y-2 text-zinc-600">
             <div>
-              Çıkış: {movie?.release_date || "-"} • Süre: {movie?.runtime ? `${movie.runtime} dk` : "-"}
+              Çıkış: {movie?.release_date || "-"} • Süre: {movie?.runtime ?? "-"} dk
             </div>
+
             <div>
               Türler: {Array.isArray(movie?.genres) ? movie.genres.map((g: any) => g.name).join(", ") : "-"}
             </div>
@@ -177,50 +177,50 @@ export default async function MoviePage(props: {
               <p className="text-base leading-8 text-zinc-800">{movie.overview}</p>
             </div>
           ) : null}
+
           <div className="mt-4 flex flex-wrap gap-4 text-sm text-blue-600">
-          {extra.turkceAltyaziUrl ? (
-          <a
-          href={extra.turkceAltyaziUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="hover:text-blue-800"
-          >
-          TrOrg
-          </a>
-          ) : null}
+            {extra.turkceAltyaziUrl ? (
+              <a
+                href={extra.turkceAltyaziUrl}
+                className="hover:text-blue-800"
+              >
+                TrOrg
+              </a>
+            ) : null}
 
-          {extra.mdblist?.url ? (
-          <a
-          href={extra.mdblist.url}
-          target="_blank"
-          rel="noreferrer"
-          className="hover:text-blue-800"
-          >
-          MDBList
-          </a>
-          ) : null}
+            {extra.imdb_id ? (
+              <a
+                href={`https://www.imdb.com/title/${extra.imdb_id}/`}
+                className="hover:text-blue-800"
+              >
+                IMDb
+              </a>
+            ) : null}
 
-          {movie?.homepage ? (
-          <a
-          href={movie.homepage}
-          target="_blank"
-          rel="noreferrer"
-          className="hover:text-blue-800"
-          >
-          Official
-          </a>
-          ) : null}
+            {extra.mdblist?.url ? (
+              <a
+                href={extra.mdblist.url}
+                className="hover:text-blue-800"
+              >
+                MDBList
+              </a>
+            ) : null}
 
-          {extra.watchProviders?.results?.link ? (
-          <a
-          href={extra.watchProviders.results.link}
-          target="_blank"
-          rel="noreferrer"
-          className="hover:text-blue-800"
-          >
-          TMDB
-          </a>
-          ) : null}
+            {movie?.homepage ? (
+              <a
+                href={movie.homepage}
+                className="hover:text-blue-800"
+              >
+                Official
+              </a>
+            ) : null}
+
+            <a
+              href={`https://www.themoviedb.org/movie/${params.id}`}
+              className="hover:text-blue-800"
+            >
+              TMDB
+            </a>
           </div>
         </div>
       </div>

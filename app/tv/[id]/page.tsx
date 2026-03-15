@@ -11,7 +11,6 @@ type SP = { from?: string | string[] };
 function decodeFrom(sp: SP | undefined) {
   const fromRaw = Array.isArray(sp?.from) ? sp?.from?.[0] : sp?.from;
   let from = "/";
-
   if (typeof fromRaw === "string" && fromRaw.length > 0) {
     try {
       from = decodeURIComponent(fromRaw);
@@ -19,7 +18,6 @@ function decodeFrom(sp: SP | undefined) {
       from = fromRaw;
     }
   }
-
   return from.startsWith("/") ? from : "/";
 }
 
@@ -100,6 +98,7 @@ export default async function TvPage(props: {
         </BackToSearchLink>
 
         <h2 style={{ marginTop: 16 }}>Dizi bulunamadı (TMDB {t.status})</h2>
+
         <pre style={{ background: "#f6f6f6", padding: 12, borderRadius: 8, overflow: "auto" }}>
           {JSON.stringify(t.json, null, 2)}
         </pre>
@@ -108,6 +107,7 @@ export default async function TvPage(props: {
   }
 
   const tv = t.json;
+
   const poster = tv?.poster_path
     ? `https://image.tmdb.org/t/p/w500${tv.poster_path}`
     : null;
@@ -140,7 +140,6 @@ export default async function TvPage(props: {
             <div className="w-full rounded-2xl bg-zinc-200" style={{ aspectRatio: "2/3" }} />
           )}
 
-          
           {providerIcons(extra.watchProviders?.results?.flatrate ?? [])}
         </div>
 
@@ -154,6 +153,7 @@ export default async function TvPage(props: {
               Başlangıç: {tv?.first_air_date || "-"} • Sezon: {tv?.number_of_seasons ?? "-"} •
               Bölüm: {tv?.number_of_episodes ?? "-"} • ~{tv?.episode_run_time?.[0] ?? "-"} dk
             </div>
+
             <div>
               Türler: {Array.isArray(tv?.genres) ? tv.genres.map((g: any) => g.name).join(", ") : "-"}
             </div>
@@ -177,53 +177,53 @@ export default async function TvPage(props: {
               <h2 className="mb-2 text-lg font-semibold">Özet</h2>
               <p className="text-base leading-8 text-zinc-800">{tv.overview}</p>
             </div>
-            
           ) : null}
 
           <div className="mt-4 flex flex-wrap gap-4 text-sm text-blue-600">
-          {extra.turkceAltyaziUrl ? (
-          <a
-          href={extra.turkceAltyaziUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="hover:text-blue-800"
-          >
-          TrOrg
-          </a>
-          ) : null}
+            {extra.turkceAltyaziUrl ? (
+              <a
+                href={extra.turkceAltyaziUrl}
+                className="hover:text-blue-800"
+              >
+                TrOrg
+              </a>
+            ) : null}
 
-          {extra.mdblist?.url ? (
-          <a
-          href={extra.mdblist.url}
-          target="_blank"
-          rel="noreferrer"
-          className="hover:text-blue-800"
-          >
-          MDBList
-          </a>
-          ) : null}
+            {extra.imdb_id ? (
+              <a
+                href={`https://www.imdb.com/title/${extra.imdb_id}/`}
+                className="hover:text-blue-800"
+              >
+                IMDb
+              </a>
+            ) : null}
 
-          {tv?.homepage ? (
-          <a
-          href={tv.homepage}
-          target="_blank"
-          rel="noreferrer"
-          className="hover:text-blue-800"
-          >
-          Official
-          </a>
-          ) : null}
+            {extra.mdblist?.url ? (
+              <a
+                href={extra.mdblist.url}
+                className="hover:text-blue-800"
+              >
+                MDBList
+              </a>
+            ) : null}
 
-          {extra.watchProviders?.results?.link ? (
-          <a
-          href={extra.watchProviders.results.link}
-          target="_blank"
-          rel="noreferrer"
-          className="hover:text-blue-800"
-          >
-          TMDB
-          </a>
-          ) : null}
+            {tv?.homepage ? (
+              <a
+                href={tv.homepage}
+                className="hover:text-blue-800"
+              >
+                Official
+              </a>
+            ) : null}
+
+            {extra.watchProviders?.results?.link ? (
+              <a
+                href={extra.watchProviders.results.link}
+                className="hover:text-blue-800"
+              >
+                TMDB
+              </a>
+            ) : null}
           </div>
         </div>
       </div>
