@@ -139,65 +139,61 @@ export default async function MoviePage(props: {
             <div className="w-full rounded-2xl bg-zinc-200" style={{ aspectRatio: "2/3" }} />
           )}
 
-          {providerIcons(extra.watchProviders?.results?.flatrate ?? [])}
-
           <div className="mt-4 space-y-2 text-sm">
             {extra.turkceAltyaziUrl ? (
               <div>
-                TürkçeAltyazı:{" "}
                 <a
                   className="underline"
                   href={extra.turkceAltyaziUrl}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  link
+                  TrAltOrg
                 </a>
               </div>
             ) : null}
 
             {extra.mdblist?.url ? (
               <div>
-                MDBList:{" "}
                 <a
                   className="underline"
                   href={extra.mdblist.url}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  link
+                  MDBList
                 </a>
               </div>
             ) : null}
 
             {movie?.homepage ? (
               <div>
-                Resmi site:{" "}
                 <a
                   className="underline break-all"
                   href={movie.homepage}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  {movie.homepage}
+                  Resmi site
                 </a>
               </div>
             ) : null}
 
             {extra.watchProviders?.results?.link ? (
               <div>
-                TMDB:{" "}
                 <a
                   className="underline"
                   href={extra.watchProviders.results.link}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  link
+                  TMDB
                 </a>
               </div>
             ) : null}
           </div>
+
+          {providerIcons(extra.watchProviders?.results?.flatrate ?? [])}
         </div>
 
         <div>
