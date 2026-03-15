@@ -3,30 +3,6 @@ import { NextResponse } from "next/server";
 type MediaType = "movie" | "tv";
 type AnyObj = Record<string, any>;
 
-type RatingSource = {
-  rating: number | string;
-  votes?: number | null;
-};
-
-type ExtraSources = {
-  imdb?: RatingSource | null;
-  mdblist?: RatingSource | null;
-  tomatoes?: RatingSource | null;
-  popcorn?: RatingSource | null;
-  metacritic?: RatingSource | null;
-  metacriticuser?: RatingSource | null;
-  trakt?: RatingSource | null;
-  letterboxd?: RatingSource | null;
-  rogerebert?: RatingSource | null;
-  myanimelist?: RatingSource | null;
-};
-
-type MdblistLink = {
-  id: string | number;
-  type: "movie" | "show";
-  url: string | null;
-};
-
 type Item = {
   id: number;
   media_type: MediaType;
@@ -43,33 +19,15 @@ type Item = {
 type EnrichedItem = Item & {
   imdbRating: number | null;
   imdbVotes: number | null;
-  sources: ExtraSources;
-  turkceAltyaziUrl: string | null;
-  mdblist: MdblistLink | null;
-};
-
-type EnrichedExtra = {
-  imdbRating: number | null;
-  imdbVotes: number | null;
-  sources: ExtraSources;
-  turkceAltyaziUrl: string | null;
-  mdblist: MdblistLink | null;
-};
-
-type SearchResponse = {
-  results: EnrichedItem[];
-  next_page: number | null;
-  has_more: boolean;
-  scanned_until_page: number;
-  total_pages: number;
+  sources?: Record<string, any>;
+  turkceAltyaziUrl?: string | null;
+  mdblist?: null;
+  ratingSource?: "imdb" | "tmdb" | null;
 };
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TARGET_BATCH_SIZE = 20;
 const MAX_SOURCE_PAGES_PER_REQUEST = 20;
-
-const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000; // 10 dk
-const ENRICH_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 gün
 
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
@@ -94,12 +52,10 @@ function formatYearFromDate(d?: string | null) {
 function toIntVotes(v: any): number | null {
   if (v == null) return null;
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
-
   if (typeof v === "string") {
     const n = parseInt(v.replace(/[^\d]/g, ""), 10);
     return Number.isFinite(n) ? n : null;
   }
-
   return null;
 }
 
@@ -115,60 +71,7 @@ function turkceAltyaziUrlFromImdb(imdbId: string) {
   return `https://turkcealtyazi.org/mov/${num}/`;
 }
 
-function slugifyTitle(input: string) {
-  return input
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .replace(/['’]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-}
-
-function mdblistWebUrl(
-  type: "movie" | "show",
-  mdblistId: string | number,
-  title?: string | null
-) {
-  const idStr = String(mdblistId);
-  const looksSlug = /[a-zA-Z\-]/.test(idStr);
-
-  if (looksSlug) return `https://mdblist.com/${type}/${idStr}`;
-
-  if (title) {
-    const s = slugifyTitle(title);
-    if (s) return `https://mdblist.com/${type}/${idStr}-${s}`;
-  }
-
-  return `https://mdblist.com/title/${idStr}`;
-}
-
-function buildSearchCacheKey(params: {
-  q: string;
-  type: "all" | MediaType;
-  year: string;
-  minRating: string;
-  minVotes: string;
-  genreMovie: string;
-  genreTv: string;
-  page: number;
-}) {
-  return JSON.stringify({
-    q: params.q.trim(),
-    type: params.type,
-    year: params.year.trim(),
-    minRating: params.minRating.trim(),
-    minVotes: params.minVotes.trim(),
-    gM: params.genreMovie.trim(),
-    gT: params.genreTv.trim(),
-    page: params.page,
-  });
-}
-
-async function tmdbFetch(
-  path: string,
-  qs?: Record<string, string | number | null | undefined>
-) {
+async function tmdbFetch(path: string, qs?: Record<string, any>) {
   const token = process.env.TMDB_BEARER_TOKEN;
   if (!token) throw new Error("TMDB_BEARER_TOKEN missing");
 
@@ -181,19 +84,13 @@ async function tmdbFetch(
   }
 
   const url = `${TMDB_BASE}/${path}${search.toString() ? `?${search.toString()}` : ""}`;
-
   const r = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    next: {
-      revalidate: 3600,
-    },
+    headers: { Authorization: `Bearer ${token}` },
+    next: { revalidate: 3600 },
   });
 
   const text = await r.text().catch(() => "");
   let json: any = null;
-
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
@@ -205,9 +102,7 @@ async function tmdbFetch(
 
 function normalizeResults(arr: any[], forcedType?: MediaType): Item[] {
   return (arr ?? [])
-    .filter((x) =>
-      forcedType ? true : x?.media_type === "movie" || x?.media_type === "tv"
-    )
+    .filter((x) => (forcedType ? true : x?.media_type === "movie" || x?.media_type === "tv"))
     .map((x) => {
       const mt: MediaType = forcedType ?? x.media_type;
       const title =
@@ -267,116 +162,95 @@ function dedupeItems<T extends { id: number; media_type: MediaType }>(list: T[])
   return out;
 }
 
-function normalizeRatingEntry(entry: any): RatingSource | null {
-  if (!entry) return null;
-
-  if (typeof entry === "number" || typeof entry === "string") {
-    return { rating: entry };
+function extractImdbMetrics(md: AnyObj | null) {
+  if (!md) {
+    return {
+      imdbRating: null,
+      imdbVotes: null,
+    };
   }
 
-  const rating =
-    entry.rating ??
-    entry.value ??
-    entry.score ??
-    entry.percent ??
-    entry.meter ??
-    entry.average ??
+  const imdbSource = md?.ratings?.find?.((r: AnyObj) => r?.source === "imdb") ?? null;
+
+  const imdbRating =
+    toNumberRating(imdbSource?.value) ??
+    toNumberRating(md?.scores?.imdb) ??
+    toNumberRating(md?.imdb_rating) ??
+    toNumberRating(md?.imdbRating) ??
     null;
 
-  if (rating == null || rating === "") return null;
+  const imdbVotes =
+    toIntVotes(imdbSource?.votes) ??
+    toIntVotes(md?.score_average_votes?.imdb) ??
+    toIntVotes(md?.imdb_votes) ??
+    toIntVotes(md?.imdbVotes) ??
+    null;
 
-  const votes = toIntVotes(
-    entry.votes ?? entry.vote_count ?? entry.count ?? entry.total ?? null
-  );
-
-  return { rating, votes: votes ?? undefined };
+  return {
+    imdbRating,
+    imdbVotes,
+  };
 }
 
-function extractSource(md: AnyObj, key: string): RatingSource | null {
-  const a = normalizeRatingEntry(md?.ratings?.[key]);
-  if (a) return a;
+function isMdblistQuotaPayload(md: AnyObj | null) {
+  if (!md) return false;
 
-  const b = normalizeRatingEntry(md?.scores?.[key]);
-  if (b) return b;
+  const text = JSON.stringify(md).toLowerCase();
+  return (
+    text.includes("daily limit") ||
+    text.includes("quota") ||
+    text.includes("rate limit") ||
+    text.includes("limit exceeded")
+  );
+}
 
-  const c = normalizeRatingEntry(md?.[key]);
-  if (c) return c;
+function getEffectiveRating(item: EnrichedItem) {
+  return item.imdbRating ?? item.vote_average ?? null;
+}
 
-  const arr = md?.ratings;
-  if (Array.isArray(arr)) {
-    const found = arr.find(
-      (x) => String(x?.source ?? x?.name ?? "").toLowerCase() === key.toLowerCase()
-    );
-    const d = normalizeRatingEntry(found);
-    if (d) return d;
-  }
+function getEffectiveVotes(item: EnrichedItem) {
+  return item.imdbVotes ?? item.vote_count ?? null;
+}
 
-  const arr2 = md?.sources;
-  if (Array.isArray(arr2)) {
-    const found = arr2.find(
-      (x) => String(x?.source ?? x?.name ?? "").toLowerCase() === key.toLowerCase()
-    );
-    const e = normalizeRatingEntry(found);
-    if (e) return e;
-  }
-
+function getRatingSource(item: EnrichedItem): "imdb" | "tmdb" | null {
+  if (item.imdbRating != null || item.imdbVotes != null) return "imdb";
+  if (item.vote_average != null || item.vote_count != null) return "tmdb";
   return null;
 }
 
 const g = globalThis as any;
-
 const ENRICH_CACHE: Map<
   string,
-  { exp: number; value: EnrichedExtra }
-> = g.__SEARCH_ENRICH_CACHE__ ?? (g.__SEARCH_ENRICH_CACHE__ = new Map());
-
-const SEARCH_RESULT_CACHE: Map<
-  string,
-  { exp: number; value: SearchResponse }
-> = g.__SEARCH_RESULT_CACHE__ ?? (g.__SEARCH_RESULT_CACHE__ = new Map());
-
-const SEARCH_INFLIGHT: Map<string, Promise<SearchResponse>> =
-  g.__SEARCH_INFLIGHT__ ?? (g.__SEARCH_INFLIGHT__ = new Map());
-
-function getCachedSearchResult(cacheKey: string): SearchResponse | null {
-  const now = Date.now();
-  const cached = SEARCH_RESULT_CACHE.get(cacheKey);
-
-  if (!cached) return null;
-  if (cached.exp <= now) {
-    SEARCH_RESULT_CACHE.delete(cacheKey);
-    return null;
+  {
+    exp: number;
+    value: Omit<EnrichedItem, keyof Item>;
   }
-
-  return cached.value;
-}
-
-function setCachedSearchResult(cacheKey: string, value: SearchResponse) {
-  SEARCH_RESULT_CACHE.set(cacheKey, {
-    exp: Date.now() + SEARCH_CACHE_TTL_MS,
-    value,
-  });
-}
+> = g.__SEARCH_ENRICH_CACHE__ ?? (g.__SEARCH_ENRICH_CACHE__ = new Map());
 
 async function enrichOne(item: Item): Promise<EnrichedItem> {
   const cacheKey = `${item.media_type}:${item.id}`;
   const now = Date.now();
-
   const cached = ENRICH_CACHE.get(cacheKey);
+
   if (cached && cached.exp > now) {
     return { ...item, ...cached.value };
   }
 
   const TMDB_TOKEN = process.env.TMDB_BEARER_TOKEN;
   if (!TMDB_TOKEN) {
-    const payload: EnrichedExtra = {
+    return {
+      ...item,
       imdbRating: null,
       imdbVotes: null,
-      sources: {} as ExtraSources,
+      sources: {},
       turkceAltyaziUrl: null,
       mdblist: null,
+      ratingSource: getRatingSource({
+        ...item,
+        imdbRating: null,
+        imdbVotes: null,
+      } as EnrichedItem),
     };
-    return { ...item, ...payload };
   }
 
   let imdb_id: string | null = null;
@@ -397,16 +271,17 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
   }
 
   if (!imdb_id) {
-    const payload: EnrichedExtra = {
+    const payload = {
       imdbRating: null,
       imdbVotes: null,
-      sources: {} as ExtraSources,
+      sources: {},
       turkceAltyaziUrl: null,
       mdblist: null,
+      ratingSource: "tmdb" as const,
     };
 
     ENRICH_CACHE.set(cacheKey, {
-      exp: now + ENRICH_CACHE_TTL_MS,
+      exp: now + 24 * 3600_000,
       value: payload,
     });
 
@@ -429,92 +304,53 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
 
       if (mdRes.ok) {
         md = (await mdRes.json()) as AnyObj;
+        if (isMdblistQuotaPayload(md)) {
+          md = null;
+        }
       }
     } catch {
       // ignore
     }
   }
 
-  const sources: ExtraSources = {
-    imdb: extractSource(md ?? {}, "imdb"),
-    mdblist: extractSource(md ?? {}, "mdblist"),
-    tomatoes: extractSource(md ?? {}, "tomatoes"),
-    popcorn: extractSource(md ?? {}, "popcorn"),
-    metacritic: extractSource(md ?? {}, "metacritic"),
-    metacriticuser: extractSource(md ?? {}, "metacriticuser"),
-    trakt: extractSource(md ?? {}, "trakt"),
-    letterboxd: extractSource(md ?? {}, "letterboxd"),
-    rogerebert: extractSource(md ?? {}, "rogerebert"),
-    myanimelist: extractSource(md ?? {}, "myanimelist"),
-  };
+  const { imdbRating, imdbVotes } = extractImdbMetrics(md);
 
-  const imdbRating =
-    sources.imdb?.rating != null ? toNumberRating(sources.imdb.rating) : null;
-  const imdbVotes =
-    sources.imdb?.votes != null ? toIntVotes(sources.imdb.votes) : null;
-
-  const mdblistId = (md?.ids?.mdblist ?? md?.id ?? null) as string | number | null;
-  const mdblistType: "movie" | "show" = item.media_type === "movie" ? "movie" : "show";
-  const mdblistUrl = mdblistId ? mdblistWebUrl(mdblistType, mdblistId, item.title) : null;
-
-  const payload: EnrichedExtra = {
+  const payload = {
     imdbRating,
     imdbVotes,
-    sources,
+    sources: {},
     turkceAltyaziUrl: turkceAltyaziUrlFromImdb(imdb_id),
-    mdblist: mdblistId
-      ? {
-          id: mdblistId,
-          type: mdblistType,
-          url: mdblistUrl,
-        }
-      : null,
+    mdblist: null,
+    ratingSource:
+      imdbRating != null || imdbVotes != null
+        ? ("imdb" as const)
+        : ("tmdb" as const),
   };
 
   ENRICH_CACHE.set(cacheKey, {
-    exp: now + ENRICH_CACHE_TTL_MS,
+    exp: now + 24 * 3600_000,
     value: payload,
   });
 
   return { ...item, ...payload };
 }
 
-async function executeSearch(req: Request): Promise<SearchResponse> {
-  const url = new URL(req.url);
+export async function GET(req: Request) {
+  try {
+    const url = new URL(req.url);
 
-  const q = (url.searchParams.get("q") ?? "").trim();
-  const type = parseType(url.searchParams.get("type"));
-  const year = url.searchParams.get("year") ?? "";
-  const minRating = url.searchParams.get("minRating") ?? "";
-  const minVotes = url.searchParams.get("minVotes") ?? "";
-  const genreMovie = url.searchParams.get("gM") ?? "";
-  const genreTv = url.searchParams.get("gT") ?? "";
-  const startPage = Math.max(1, Number(url.searchParams.get("page") ?? "1"));
+    const q = (url.searchParams.get("q") ?? "").trim();
+    const type = parseType(url.searchParams.get("type"));
+    const year = url.searchParams.get("year") ?? "";
+    const minRating = url.searchParams.get("minRating") ?? "";
+    const minVotes = url.searchParams.get("minVotes") ?? "";
+    const genreMovie = url.searchParams.get("gM") ?? "";
+    const genreTv = url.searchParams.get("gT") ?? "";
+    const startPage = Math.max(1, Number(url.searchParams.get("page") ?? "1"));
 
-  const cacheKey = buildSearchCacheKey({
-    q,
-    type,
-    year,
-    minRating,
-    minVotes,
-    genreMovie,
-    genreTv,
-    page: startPage,
-  });
-
-  const cached = getCachedSearchResult(cacheKey);
-  if (cached) {
-    return cached;
-  }
-
-  const existingInflight = SEARCH_INFLIGHT.get(cacheKey);
-  if (existingInflight) {
-    return existingInflight;
-  }
-
-  const promise = (async (): Promise<SearchResponse> => {
     const minRRaw = parseNumber(minRating, null);
     const minVRaw = parseNumber(minVotes, null);
+
     const minR = minRRaw != null ? clamp(minRRaw, 0, 10) : null;
     const minV = minVRaw != null ? Math.max(0, minVRaw) : null;
 
@@ -539,7 +375,10 @@ async function executeSearch(req: Request): Promise<SearchResponse> {
         });
 
         if (!data.ok) {
-          throw new Error(`tmdb search failed: ${data.status}`);
+          return NextResponse.json(
+            { error: "tmdb search failed", status: data.status, body: data.json },
+            { status: 502 }
+          );
         }
 
         merged = applyBaseFilters(
@@ -591,19 +430,18 @@ async function executeSearch(req: Request): Promise<SearchResponse> {
         ]);
 
         if (!m.ok || !t.ok) {
-          throw new Error("tmdb discover failed");
+          return NextResponse.json(
+            { error: "tmdb discover failed", movie: m, tv: t },
+            { status: 502 }
+          );
         }
 
         const mItems = m.json ? normalizeResults(m.json?.results ?? [], "movie") : [];
         const tItems = t.json ? normalizeResults(t.json?.results ?? [], "tv") : [];
 
-        merged = applyBaseFilters(
-          [...mItems, ...tItems],
-          type,
-          year,
-          genreMovie,
-          genreTv
-        ).sort((a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1));
+        merged = applyBaseFilters([...mItems, ...tItems], type, year, genreMovie, genreTv).sort(
+          (a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1)
+        );
 
         totalPages = Math.max(m.json?.total_pages ?? 1, t.json?.total_pages ?? 1);
       }
@@ -614,59 +452,45 @@ async function executeSearch(req: Request): Promise<SearchResponse> {
       const enriched = await Promise.all(deduped.map((item) => enrichOne(item)));
 
       const filtered = enriched.filter((x) => {
+        const effectiveRating = getEffectiveRating(x);
+        const effectiveVotes = getEffectiveVotes(x);
+
         if (minR != null) {
-          if (x.imdbRating == null) return false;
-          if (x.imdbRating < minR) return false;
+          if (effectiveRating == null) return false;
+          if (effectiveRating < minR) return false;
         }
 
         if (minV != null) {
-          if (x.imdbVotes == null) return false;
-          if (x.imdbVotes < minV) return false;
+          if (effectiveVotes == null) return false;
+          if (effectiveVotes < minV) return false;
         }
 
         return true;
       });
 
-      const sortedFiltered = filtered.sort(
-        (a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1)
-      );
+      const sortedFiltered = filtered.sort((a, b) => {
+        const aVotes = getEffectiveVotes(a) ?? -1;
+        const bVotes = getEffectiveVotes(b) ?? -1;
+        return bVotes - aVotes;
+      });
 
-      collected = dedupeItems([...collected, ...sortedFiltered]).slice(
-        0,
-        TARGET_BATCH_SIZE
-      );
-
+      collected = dedupeItems([...collected, ...sortedFiltered]).slice(0, TARGET_BATCH_SIZE);
       sourcePage += 1;
     }
 
     const hasMore = sourcePage <= totalPages;
     const nextPage = hasMore ? sourcePage : null;
 
-    const response: SearchResponse = {
-      results: collected,
+    return NextResponse.json({
+      results: collected.map((item) => ({
+        ...item,
+        ratingSource: getRatingSource(item),
+      })),
       next_page: nextPage,
       has_more: hasMore,
       scanned_until_page: sourcePage - 1,
       total_pages: Number.isFinite(totalPages) ? totalPages : 1,
-    };
-
-    setCachedSearchResult(cacheKey, response);
-    return response;
-  })();
-
-  SEARCH_INFLIGHT.set(cacheKey, promise);
-
-  try {
-    return await promise;
-  } finally {
-    SEARCH_INFLIGHT.delete(cacheKey);
-  }
-}
-
-export async function GET(req: Request) {
-  try {
-    const result = await executeSearch(req);
-    return NextResponse.json(result);
+    });
   } catch (error) {
     return NextResponse.json(
       {
