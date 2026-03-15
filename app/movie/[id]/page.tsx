@@ -393,9 +393,6 @@ export default async function MoviePage(props: {
         </div>
       </div>
 
-      <p className="mt-10 text-xs text-zinc-500">
-        This product uses the TMDb API but is not endorsed or certified by TMDb.
-      </p>
     </div>
   );
 }

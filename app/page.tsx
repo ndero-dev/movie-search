@@ -66,9 +66,10 @@ function cleanParam(value: string | null | undefined) {
 
 function safeInputValue(value: unknown) {
   if (value == null) return "";
-  const v = String(value).trim();
-  if (!v) return "";
+
+  const v = String(value);
   const lower = v.toLowerCase();
+
   if (lower === "null" || lower === "undefined" || lower === "n/a") return "";
   return v;
 }
@@ -150,8 +151,7 @@ export default function HomePage() {
   const [year, setYear] = useState("");
   const [minRating, setMinRating] = useState("");
   const [minVotes, setMinVotes] = useState("");
-  const [genreMovie, setGenreMovie] = useState("");
-  const [genreTv, setGenreTv] = useState("");
+  const [genre, setGenre] = useState("");
 
   const [paramsHydrated, setParamsHydrated] = useState(false);
   const [currentFromUrl, setCurrentFromUrl] = useState("/");
@@ -192,8 +192,7 @@ export default function HomePage() {
     setYear(cleanParam(sp.get("year")));
     setMinRating(cleanParam(sp.get("minRating")));
     setMinVotes(cleanParam(sp.get("minVotes")));
-    setGenreMovie(cleanParam(sp.get("gM")));
-    setGenreTv(cleanParam(sp.get("gT")));
+    setGenre(cleanParam(sp.get("g")));
 
     setCurrentFromUrl(`${window.location.pathname}${window.location.search || ""}`);
     setParamsHydrated(true);
@@ -240,26 +239,23 @@ export default function HomePage() {
     const nextYear = cleanParam(year);
     const nextMinRating = cleanParam(minRating);
     const nextMinVotes = cleanParam(minVotes);
-    const nextGenreMovie = cleanParam(genreMovie);
-    const nextGenreTv = cleanParam(genreTv);
+    const nextGenre = cleanParam(genre);
 
     const sp = new URLSearchParams();
 
     if (nextQ) sp.set("q", nextQ);
     sp.set("type", type);
-
     if (nextYear) sp.set("year", nextYear);
     if (nextMinRating) sp.set("minRating", nextMinRating);
     if (nextMinVotes) sp.set("minVotes", nextMinVotes);
-    if (nextGenreMovie) sp.set("gM", nextGenreMovie);
-    if (nextGenreTv) sp.set("gT", nextGenreTv);
+    if (nextGenre) sp.set("g", nextGenre);
 
     const qs = sp.toString();
     const nextUrl = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
 
     window.history.replaceState(null, "", nextUrl);
     setCurrentFromUrl(nextUrl);
-  }, [mounted, paramsHydrated, q, type, year, minRating, minVotes, genreMovie, genreTv]);
+  }, [mounted, paramsHydrated, q, type, year, minRating, minVotes, genre]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -287,6 +283,28 @@ export default function HomePage() {
     };
   }, [mounted]);
 
+  const mergedGenres = useMemo(() => {
+    const map = new Map<string, { id: string; name: string }>();
+
+    for (const g of movieGenres) {
+      const key = g.name.trim().toLocaleLowerCase("tr-TR");
+      if (!map.has(key)) {
+        map.set(key, { id: String(g.id), name: g.name });
+      }
+    }
+
+    for (const g of tvGenres) {
+      const key = g.name.trim().toLocaleLowerCase("tr-TR");
+      if (!map.has(key)) {
+        map.set(key, { id: String(g.id), name: g.name });
+      }
+    }
+
+    return Array.from(map.values()).sort((a, b) =>
+      a.name.localeCompare(b.name, "tr-TR")
+    );
+  }, [movieGenres, tvGenres]);
+
   function saveSnapshot() {
     try {
       const url = `${window.location.pathname}${window.location.search}`;
@@ -313,14 +331,19 @@ export default function HomePage() {
     setErr(null);
 
     try {
+      const cleanGenre = cleanParam(genre);
+
+      const gM = cleanGenre ? cleanGenre : null;
+      const gT = cleanGenre ? cleanGenre : null;
+
       const data = await searchApi({
         q: cleanParam(q),
         type,
         year: cleanParam(year),
         minRating: cleanParam(minRating),
         minVotes: cleanParam(minVotes),
-        gM: cleanParam(genreMovie),
-        gT: cleanParam(genreTv),
+        gM: type === "tv" ? null : gM,
+        gT: type === "movie" ? null : gT,
         page: requestPage,
       });
 
@@ -336,7 +359,7 @@ export default function HomePage() {
         });
       }
     } catch (e: any) {
-      setErr(e?.message ?? "Hata");
+      setErr(e?.message ?? 'Hata');
     } finally {
       setLoading(false);
       loadLockRef.current = false;
@@ -370,8 +393,7 @@ export default function HomePage() {
     setYear("");
     setMinRating("");
     setMinVotes("");
-    setGenreMovie("");
-    setGenreTv("");
+    setGenre("");
     setItems([]);
     setNextPage(null);
     setErr(null);
@@ -423,7 +445,6 @@ export default function HomePage() {
       window.removeEventListener("resize", onResize);
       window.clearTimeout(t);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, hasSearched, nextPage, loading]);
 
   useEffect(() => {
@@ -437,7 +458,6 @@ export default function HomePage() {
     return () => {
       window.clearTimeout(t);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, items.length, hasSearched, nextPage, loading]);
 
   const activeFilters = useMemo(() => {
@@ -449,18 +469,13 @@ export default function HomePage() {
     if (cleanParam(minRating)) out.push(`IMDb ≥ ${cleanParam(minRating)}`);
     if (cleanParam(minVotes)) out.push(`Oy ≥ ${cleanParam(minVotes)}`);
 
-    if (type !== "tv" && cleanParam(genreMovie)) {
-      const genreName = movieGenres.find((g) => String(g.id) === cleanParam(genreMovie))?.name;
-      out.push(`Film türü: ${genreName ?? cleanParam(genreMovie)}`);
-    }
-
-    if (type !== "movie" && cleanParam(genreTv)) {
-      const genreName = tvGenres.find((g) => String(g.id) === cleanParam(genreTv))?.name;
-      out.push(`Dizi türü: ${genreName ?? cleanParam(genreTv)}`);
+    if (cleanParam(genre)) {
+      const genreName = mergedGenres.find((g) => g.id === cleanParam(genre))?.name;
+      out.push(`Kategori: ${genreName ?? cleanParam(genre)}`);
     }
 
     return out;
-  }, [q, type, year, minRating, minVotes, genreMovie, genreTv, movieGenres, tvGenres]);
+  }, [q, type, year, minRating, minVotes, genre, mergedGenres]);
 
   function Card({ x }: { x: Item }) {
     const poster = buildPoster(x.poster_path);
@@ -569,19 +584,16 @@ export default function HomePage() {
     );
   }
 
-  const movieGenreDisabled = type === "tv";
-  const tvGenreDisabled = type === "movie";
-
   return (
     <main className="mx-auto max-w-7xl px-4 py-8">
-      <div className="mb-8 space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight text-zinc-900">Movie / TV Search</h1>
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold tracking-tight text-zinc-900">🎬 Movie / TV Search</h1>
       </div>
 
       <section className="mb-6 rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <input
-            value={safeInputValue(q)}
+            value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="İsim (opsiyonel)"
             autoComplete="off"
@@ -602,6 +614,19 @@ export default function HomePage() {
             <option value="all">Hepsi</option>
             <option value="movie">Film</option>
             <option value="tv">Dizi</option>
+          </select>
+
+          <select
+            value={safeInputValue(genre)}
+            onChange={(e) => setGenre(e.target.value)}
+            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+          >
+            <option value="">Tür (opsiyonel)</option>
+            {mergedGenres.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
           </select>
 
           <input
@@ -643,35 +668,7 @@ export default function HomePage() {
             }}
           />
 
-          <select
-            value={safeInputValue(genreMovie)}
-            onChange={(e) => setGenreMovie(e.target.value)}
-            disabled={movieGenreDisabled}
-            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400"
-          >
-            <option value="">Film türü (opsiyonel)</option>
-            {movieGenres.map((g) => (
-              <option key={g.id} value={String(g.id)}>
-                {g.name}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={safeInputValue(genreTv)}
-            onChange={(e) => setGenreTv(e.target.value)}
-            disabled={tvGenreDisabled}
-            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400"
-          >
-            <option value="">Dizi türü (opsiyonel)</option>
-            {tvGenres.map((g) => (
-              <option key={g.id} value={String(g.id)}>
-                {g.name}
-              </option>
-            ))}
-          </select>
-
-          <div className="flex gap-3 sm:col-span-2 lg:col-span-1">
+          <div className="flex gap-3 sm:col-span-2 lg:col-span-2">
             <button
               type="button"
               onClick={startSearch}
