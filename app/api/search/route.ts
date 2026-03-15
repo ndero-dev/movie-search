@@ -56,9 +56,20 @@ type EnrichedExtra = {
   mdblist: MdblistLink | null;
 };
 
+type SearchResponse = {
+  results: EnrichedItem[];
+  next_page: number | null;
+  has_more: boolean;
+  scanned_until_page: number;
+  total_pages: number;
+};
+
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TARGET_BATCH_SIZE = 20;
 const MAX_SOURCE_PAGES_PER_REQUEST = 20;
+
+const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000; // 10 dk
+const ENRICH_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 gün
 
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
@@ -83,10 +94,12 @@ function formatYearFromDate(d?: string | null) {
 function toIntVotes(v: any): number | null {
   if (v == null) return null;
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
+
   if (typeof v === "string") {
     const n = parseInt(v.replace(/[^\d]/g, ""), 10);
     return Number.isFinite(n) ? n : null;
   }
+
   return null;
 }
 
@@ -118,8 +131,8 @@ function mdblistWebUrl(
   title?: string | null
 ) {
   const idStr = String(mdblistId);
-
   const looksSlug = /[a-zA-Z\-]/.test(idStr);
+
   if (looksSlug) return `https://mdblist.com/${type}/${idStr}`;
 
   if (title) {
@@ -130,7 +143,32 @@ function mdblistWebUrl(
   return `https://mdblist.com/title/${idStr}`;
 }
 
-async function tmdbFetch(path: string, qs?: Record<string, any>) {
+function buildSearchCacheKey(params: {
+  q: string;
+  type: "all" | MediaType;
+  year: string;
+  minRating: string;
+  minVotes: string;
+  genreMovie: string;
+  genreTv: string;
+  page: number;
+}) {
+  return JSON.stringify({
+    q: params.q.trim(),
+    type: params.type,
+    year: params.year.trim(),
+    minRating: params.minRating.trim(),
+    minVotes: params.minVotes.trim(),
+    gM: params.genreMovie.trim(),
+    gT: params.genreTv.trim(),
+    page: params.page,
+  });
+}
+
+async function tmdbFetch(
+  path: string,
+  qs?: Record<string, string | number | null | undefined>
+) {
   const token = process.env.TMDB_BEARER_TOKEN;
   if (!token) throw new Error("TMDB_BEARER_TOKEN missing");
 
@@ -143,13 +181,19 @@ async function tmdbFetch(path: string, qs?: Record<string, any>) {
   }
 
   const url = `${TMDB_BASE}/${path}${search.toString() ? `?${search.toString()}` : ""}`;
+
   const r = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-    next: { revalidate: 3600 },
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    next: {
+      revalidate: 3600,
+    },
   });
 
   const text = await r.text().catch(() => "");
   let json: any = null;
+
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
@@ -161,7 +205,9 @@ async function tmdbFetch(path: string, qs?: Record<string, any>) {
 
 function normalizeResults(arr: any[], forcedType?: MediaType): Item[] {
   return (arr ?? [])
-    .filter((x) => (forcedType ? true : x?.media_type === "movie" || x?.media_type === "tv"))
+    .filter((x) =>
+      forcedType ? true : x?.media_type === "movie" || x?.media_type === "tv"
+    )
     .map((x) => {
       const mt: MediaType = forcedType ?? x.media_type;
       const title =
@@ -278,8 +324,39 @@ function extractSource(md: AnyObj, key: string): RatingSource | null {
 }
 
 const g = globalThis as any;
-const ENRICH_CACHE: Map<string, { exp: number; value: EnrichedExtra }> =
-  g.__SEARCH_ENRICH_CACHE__ ?? (g.__SEARCH_ENRICH_CACHE__ = new Map());
+
+const ENRICH_CACHE: Map<
+  string,
+  { exp: number; value: EnrichedExtra }
+> = g.__SEARCH_ENRICH_CACHE__ ?? (g.__SEARCH_ENRICH_CACHE__ = new Map());
+
+const SEARCH_RESULT_CACHE: Map<
+  string,
+  { exp: number; value: SearchResponse }
+> = g.__SEARCH_RESULT_CACHE__ ?? (g.__SEARCH_RESULT_CACHE__ = new Map());
+
+const SEARCH_INFLIGHT: Map<string, Promise<SearchResponse>> =
+  g.__SEARCH_INFLIGHT__ ?? (g.__SEARCH_INFLIGHT__ = new Map());
+
+function getCachedSearchResult(cacheKey: string): SearchResponse | null {
+  const now = Date.now();
+  const cached = SEARCH_RESULT_CACHE.get(cacheKey);
+
+  if (!cached) return null;
+  if (cached.exp <= now) {
+    SEARCH_RESULT_CACHE.delete(cacheKey);
+    return null;
+  }
+
+  return cached.value;
+}
+
+function setCachedSearchResult(cacheKey: string, value: SearchResponse) {
+  SEARCH_RESULT_CACHE.set(cacheKey, {
+    exp: Date.now() + SEARCH_CACHE_TTL_MS,
+    value,
+  });
+}
 
 async function enrichOne(item: Item): Promise<EnrichedItem> {
   const cacheKey = `${item.media_type}:${item.id}`;
@@ -315,7 +392,9 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
       const ext = (await extRes.json()) as AnyObj;
       imdb_id = (ext?.imdb_id as string | null) ?? null;
     }
-  } catch {}
+  } catch {
+    // ignore
+  }
 
   if (!imdb_id) {
     const payload: EnrichedExtra = {
@@ -327,7 +406,7 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
     };
 
     ENRICH_CACHE.set(cacheKey, {
-      exp: now + 24 * 3600_000,
+      exp: now + ENRICH_CACHE_TTL_MS,
       value: payload,
     });
 
@@ -351,7 +430,9 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
       if (mdRes.ok) {
         md = (await mdRes.json()) as AnyObj;
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   const sources: ExtraSources = {
@@ -372,17 +453,9 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
   const imdbVotes =
     sources.imdb?.votes != null ? toIntVotes(sources.imdb.votes) : null;
 
-  const mdblistId = (md?.ids?.mdblist ?? md?.id ?? null) as
-    | string
-    | number
-    | null;
-
-  const mdblistType: "movie" | "show" =
-    item.media_type === "movie" ? "movie" : "show";
-
-  const mdblistUrl = mdblistId
-    ? mdblistWebUrl(mdblistType, mdblistId, item.title)
-    : null;
+  const mdblistId = (md?.ids?.mdblist ?? md?.id ?? null) as string | number | null;
+  const mdblistType: "movie" | "show" = item.media_type === "movie" ? "movie" : "show";
+  const mdblistUrl = mdblistId ? mdblistWebUrl(mdblistType, mdblistId, item.title) : null;
 
   const payload: EnrichedExtra = {
     imdbRating,
@@ -399,26 +472,47 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
   };
 
   ENRICH_CACHE.set(cacheKey, {
-    exp: now + 24 * 3600_000,
+    exp: now + ENRICH_CACHE_TTL_MS,
     value: payload,
   });
 
   return { ...item, ...payload };
 }
 
-export async function GET(req: Request) {
-  try {
-    const url = new URL(req.url);
+async function executeSearch(req: Request): Promise<SearchResponse> {
+  const url = new URL(req.url);
 
-    const q = (url.searchParams.get("q") ?? "").trim();
-    const type = parseType(url.searchParams.get("type"));
-    const year = url.searchParams.get("year") ?? "";
-    const minRating = url.searchParams.get("minRating") ?? "";
-    const minVotes = url.searchParams.get("minVotes") ?? "";
-    const genreMovie = url.searchParams.get("gM") ?? "";
-    const genreTv = url.searchParams.get("gT") ?? "";
-    const startPage = Math.max(1, Number(url.searchParams.get("page") ?? "1"));
+  const q = (url.searchParams.get("q") ?? "").trim();
+  const type = parseType(url.searchParams.get("type"));
+  const year = url.searchParams.get("year") ?? "";
+  const minRating = url.searchParams.get("minRating") ?? "";
+  const minVotes = url.searchParams.get("minVotes") ?? "";
+  const genreMovie = url.searchParams.get("gM") ?? "";
+  const genreTv = url.searchParams.get("gT") ?? "";
+  const startPage = Math.max(1, Number(url.searchParams.get("page") ?? "1"));
 
+  const cacheKey = buildSearchCacheKey({
+    q,
+    type,
+    year,
+    minRating,
+    minVotes,
+    genreMovie,
+    genreTv,
+    page: startPage,
+  });
+
+  const cached = getCachedSearchResult(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const existingInflight = SEARCH_INFLIGHT.get(cacheKey);
+  if (existingInflight) {
+    return existingInflight;
+  }
+
+  const promise = (async (): Promise<SearchResponse> => {
     const minRRaw = parseNumber(minRating, null);
     const minVRaw = parseNumber(minVotes, null);
     const minR = minRRaw != null ? clamp(minRRaw, 0, 10) : null;
@@ -445,10 +539,7 @@ export async function GET(req: Request) {
         });
 
         if (!data.ok) {
-          return NextResponse.json(
-            { error: "tmdb search failed", status: data.status, body: data.json },
-            { status: 502 }
-          );
+          throw new Error(`tmdb search failed: ${data.status}`);
         }
 
         merged = applyBaseFilters(
@@ -489,7 +580,6 @@ export async function GET(req: Request) {
                 with_genres: genreMovie || undefined,
               })
             : Promise.resolve({ ok: true, status: 200, json: null }),
-
           wantTv
             ? tmdbFetch("discover/tv", {
                 ...common,
@@ -501,10 +591,7 @@ export async function GET(req: Request) {
         ]);
 
         if (!m.ok || !t.ok) {
-          return NextResponse.json(
-            { error: "tmdb discover failed", movie: m, tv: t },
-            { status: 502 }
-          );
+          throw new Error("tmdb discover failed");
         }
 
         const mItems = m.json ? normalizeResults(m.json?.results ?? [], "movie") : [];
@@ -555,13 +642,31 @@ export async function GET(req: Request) {
     const hasMore = sourcePage <= totalPages;
     const nextPage = hasMore ? sourcePage : null;
 
-    return NextResponse.json({
+    const response: SearchResponse = {
       results: collected,
       next_page: nextPage,
       has_more: hasMore,
       scanned_until_page: sourcePage - 1,
       total_pages: Number.isFinite(totalPages) ? totalPages : 1,
-    });
+    };
+
+    setCachedSearchResult(cacheKey, response);
+    return response;
+  })();
+
+  SEARCH_INFLIGHT.set(cacheKey, promise);
+
+  try {
+    return await promise;
+  } finally {
+    SEARCH_INFLIGHT.delete(cacheKey);
+  }
+}
+
+export async function GET(req: Request) {
+  try {
+    const result = await executeSearch(req);
+    return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json(
       {
