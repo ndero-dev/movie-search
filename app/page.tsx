@@ -555,7 +555,7 @@ export default function HomePage() {
                   rel="noreferrer"
                   className="font-medium text-blue-600 hover:underline"
                 >
-                  TürkçeAltyazı
+                  TrOrg
                 </a>
               ) : null}
 
