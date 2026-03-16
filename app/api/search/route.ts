@@ -16,10 +16,22 @@ type Item = {
   genre_ids: number[];
 };
 
+type RatingMetric = {
+  rating: number | null;
+  votes: number | null;
+};
+
+type EnrichedSources = {
+  trakt?: RatingMetric;
+  tomatoes?: RatingMetric;
+  popcorn?: RatingMetric;
+  metacritic?: RatingMetric;
+};
+
 type EnrichedItem = Item & {
   imdbRating: number | null;
   imdbVotes: number | null;
-  sources?: Record<string, any>;
+  sources?: EnrichedSources;
   turkceAltyaziUrl?: string | null;
   mdblist?: null;
   ratingSource?: "imdb" | "tmdb" | null;
@@ -84,6 +96,7 @@ async function tmdbFetch(path: string, qs?: Record<string, any>) {
   }
 
   const url = `${TMDB_BASE}/${path}${search.toString() ? `?${search.toString()}` : ""}`;
+
   const r = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
     next: { revalidate: 3600 },
@@ -91,6 +104,7 @@ async function tmdbFetch(path: string, qs?: Record<string, any>) {
 
   const text = await r.text().catch(() => "");
   let json: any = null;
+
   try {
     json = text ? JSON.parse(text) : null;
   } catch {
@@ -106,9 +120,7 @@ function normalizeResults(arr: any[], forcedType?: MediaType): Item[] {
     .map((x) => {
       const mt: MediaType = forcedType ?? x.media_type;
       const title =
-        mt === "tv"
-          ? (x?.name ?? x?.original_name ?? "")
-          : (x?.title ?? x?.original_title ?? "");
+        mt === "tv" ? (x?.name ?? x?.original_name ?? "") : (x?.title ?? x?.original_title ?? "");
       const date = mt === "tv" ? x?.first_air_date : x?.release_date;
 
       return {
@@ -148,7 +160,7 @@ function applyBaseFilters(
   });
 }
 
-function dedupeItems<T extends { id: number; media_type: MediaType }>(list: T[]) {
+function dedupeItems<T extends { media_type: MediaType; id: number }>(list: T[]) {
   const seen = new Set<string>();
   const out: T[] = [];
 
@@ -186,16 +198,48 @@ function extractImdbMetrics(md: AnyObj | null) {
     toIntVotes(md?.imdbVotes) ??
     null;
 
-  return {
-    imdbRating,
-    imdbVotes,
-  };
+  return { imdbRating, imdbVotes };
+}
+
+function extractSources(md: AnyObj | null): EnrichedSources {
+  const out: EnrichedSources = {};
+  const ratings = Array.isArray(md?.ratings) ? md.ratings : [];
+
+  for (const r of ratings) {
+    const source = String(r?.source ?? "").toLowerCase();
+    const metric: RatingMetric = {
+      rating: toNumberRating(r?.value),
+      votes: toIntVotes(r?.votes),
+    };
+
+    if (source === "trakt") {
+      out.trakt = metric;
+      continue;
+    }
+
+    if (source === "tomatoes") {
+      out.tomatoes = metric;
+      continue;
+    }
+
+    if (source === "tomatoesaudience") {
+      out.popcorn = metric;
+      continue;
+    }
+
+    if (source === "metacritic") {
+      out.metacritic = metric;
+      continue;
+    }
+  }
+
+  return out;
 }
 
 function isMdblistQuotaPayload(md: AnyObj | null) {
   if (!md) return false;
-
   const text = JSON.stringify(md).toLowerCase();
+
   return (
     text.includes("daily limit") ||
     text.includes("quota") ||
@@ -237,6 +281,7 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
   }
 
   const TMDB_TOKEN = process.env.TMDB_BEARER_TOKEN;
+
   if (!TMDB_TOKEN) {
     return {
       ...item,
@@ -293,11 +338,7 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
 
   if (MDB_KEY) {
     try {
-      const mdType: "movie" | "show" = item.media_type === "movie" ? "movie" : "show";
-      const mdUrl = `https://api.mdblist.com/imdb/${mdType}/${encodeURIComponent(
-        imdb_id
-      )}?apikey=${encodeURIComponent(MDB_KEY)}`;
-
+      const mdUrl = `https://mdblist.com/api/?apikey=${encodeURIComponent(MDB_KEY)}&i=${encodeURIComponent(imdb_id)}`;
       const mdRes = await fetch(mdUrl, {
         next: { revalidate: 86400 },
       });
@@ -314,17 +355,16 @@ async function enrichOne(item: Item): Promise<EnrichedItem> {
   }
 
   const { imdbRating, imdbVotes } = extractImdbMetrics(md);
+  const sources = extractSources(md);
 
   const payload = {
     imdbRating,
     imdbVotes,
-    sources: {},
+    sources,
     turkceAltyaziUrl: turkceAltyaziUrlFromImdb(imdb_id),
     mdblist: null,
     ratingSource:
-      imdbRating != null || imdbVotes != null
-        ? ("imdb" as const)
-        : ("tmdb" as const),
+      imdbRating != null || imdbVotes != null ? ("imdb" as const) : ("tmdb" as const),
   };
 
   ENRICH_CACHE.set(cacheKey, {
@@ -350,7 +390,6 @@ export async function GET(req: Request) {
 
     const minRRaw = parseNumber(minRating, null);
     const minVRaw = parseNumber(minVotes, null);
-
     const minR = minRRaw != null ? clamp(minRRaw, 0, 10) : null;
     const minV = minVRaw != null ? Math.max(0, minVRaw) : null;
 
@@ -419,6 +458,7 @@ export async function GET(req: Request) {
                 with_genres: genreMovie || undefined,
               })
             : Promise.resolve({ ok: true, status: 200, json: null }),
+
           wantTv
             ? tmdbFetch("discover/tv", {
                 ...common,
