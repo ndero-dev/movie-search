@@ -3,14 +3,20 @@ import { NextResponse } from "next/server";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 
 function getRevalidateSeconds(path: string) {
-  if (path === "genre/movie/list" || path === "genre/tv/list") {
+  if (
+    path === "genre/movie/list" ||
+    path === "genre/tv/list" ||
+    path === "watch/providers/movie" ||
+    path === "watch/providers/tv"
+  ) {
     return 7 * 24 * 60 * 60; // 7 gün
   }
 
   if (
     path.startsWith("movie/") ||
     path.startsWith("tv/") ||
-    path.includes("/external_ids")
+    path.includes("/external_ids") ||
+    path.includes("/watch/providers")
   ) {
     return 24 * 60 * 60; // 1 gün
   }
@@ -30,7 +36,15 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "missing path" }, { status: 400 });
   }
 
-  const allowedPrefixes = ["search/", "movie/", "tv/", "genre/", "discover/"];
+  const allowedPrefixes = [
+    "search/",
+    "movie/",
+    "tv/",
+    "genre/",
+    "discover/",
+    "watch/providers/",
+  ];
+
   if (!allowedPrefixes.some((p) => path.startsWith(p))) {
     return NextResponse.json({ error: "path not allowed" }, { status: 400 });
   }

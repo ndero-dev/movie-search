@@ -40,6 +40,12 @@ type SearchResponse = {
   total_pages?: number;
 };
 
+type ProviderOption = {
+  provider_id: number;
+  provider_name: string;
+  logo_path: string | null;
+};
+
 const SNAPSHOT_KEY = "movieapp:searchSnapshot:v4";
 const RESTORE_FLAG_KEY = "movieapp:restoreNext:v1";
 
@@ -143,6 +149,21 @@ function dedupeItems(list: Item[]) {
   return out;
 }
 
+function dedupeProviders(list: ProviderOption[]) {
+  const map = new Map<number, ProviderOption>();
+
+  for (const provider of list) {
+    if (!provider?.provider_id || !provider?.provider_name) continue;
+    if (!map.has(provider.provider_id)) {
+      map.set(provider.provider_id, provider);
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) =>
+    a.provider_name.localeCompare(b.provider_name, "tr-TR")
+  );
+}
+
 export default function HomePage() {
   const [mounted, setMounted] = useState(false);
 
@@ -151,6 +172,7 @@ export default function HomePage() {
   const [year, setYear] = useState("");
   const [minRating, setMinRating] = useState("");
   const [minVotes, setMinVotes] = useState("");
+  const [platform, setPlatform] = useState("");
   const [genre, setGenre] = useState("");
 
   const [paramsHydrated, setParamsHydrated] = useState(false);
@@ -158,6 +180,7 @@ export default function HomePage() {
 
   const [movieGenres, setMovieGenres] = useState<{ id: number; name: string }[]>([]);
   const [tvGenres, setTvGenres] = useState<{ id: number; name: string }[]>([]);
+  const [platformOptions, setPlatformOptions] = useState<ProviderOption[]>([]);
 
   const [items, setItems] = useState<Item[]>([]);
   const [nextPage, setNextPage] = useState<number | null>(null);
@@ -168,7 +191,6 @@ export default function HomePage() {
   const restoringRef = useRef(false);
   const loadLockRef = useRef(false);
   const lastRequestedPageRef = useRef<number | null>(null);
-  
 
   useEffect(() => {
     setMounted(true);
@@ -193,66 +215,67 @@ export default function HomePage() {
     setYear(cleanParam(sp.get("year")));
     setMinRating(cleanParam(sp.get("minRating")));
     setMinVotes(cleanParam(sp.get("minVotes")));
+    setPlatform(cleanParam(sp.get("platform")));
     setGenre(cleanParam(sp.get("g")));
 
     setCurrentFromUrl(`${window.location.pathname}${window.location.search || ""}`);
     setParamsHydrated(true);
   }, [mounted]);
 
- useEffect(() => {
-  if (!mounted) return;
+  useEffect(() => {
+    if (!mounted) return;
 
-  try {
-    const raw = sessionStorage.getItem(SNAPSHOT_KEY);
-    if (!raw) return;
+    try {
+      const raw = sessionStorage.getItem(SNAPSHOT_KEY);
+      if (!raw) return;
 
-    const snap = JSON.parse(raw) as {
-      url?: string;
-      scrollY?: number;
-      items?: Item[];
-      nextPage?: number | null;
-      ts?: number;
-    };
+      const snap = JSON.parse(raw) as {
+        url?: string;
+        scrollY?: number;
+        items?: Item[];
+        nextPage?: number | null;
+        ts?: number;
+      };
 
-    const currentUrl = `${window.location.pathname}${window.location.search || ""}`;
-    const flag = sessionStorage.getItem(RESTORE_FLAG_KEY);
-    const hasRestoreFlag = flag === "1";
-    const sameUrl = snap?.url === currentUrl;
-    const isFresh =
-      typeof snap?.ts === "number"
-        ? Date.now() - snap.ts < 1000 * 60 * 30
-        : true;
+      const currentUrl = `${window.location.pathname}${window.location.search || ""}`;
+      const flag = sessionStorage.getItem(RESTORE_FLAG_KEY);
+      const hasRestoreFlag = flag === "1";
+      const sameUrl = snap?.url === currentUrl;
+      const isFresh =
+        typeof snap?.ts === "number"
+          ? Date.now() - snap.ts < 1000 * 60 * 30
+          : true;
 
-    if (!isFresh) return;
-    if (!hasRestoreFlag && !sameUrl) return;
+      if (!isFresh) return;
+      if (!hasRestoreFlag && !sameUrl) return;
 
-    if (hasRestoreFlag) {
-      sessionStorage.removeItem(RESTORE_FLAG_KEY);
+      if (hasRestoreFlag) {
+        sessionStorage.removeItem(RESTORE_FLAG_KEY);
+      }
+
+      restoringRef.current = true;
+
+      if (Array.isArray(snap.items)) {
+        setItems(snap.items);
+      }
+
+      if (typeof snap.nextPage === "number" || snap.nextPage === null) {
+        setNextPage(snap.nextPage);
+      }
+
+      setHasSearched(true);
+
+      requestAnimationFrame(() => {
+        window.scrollTo(0, snap.scrollY ?? 0);
+
+        setTimeout(() => {
+          restoringRef.current = false;
+        }, 50);
+      });
+    } catch {
+      // ignore
     }
-
-    restoringRef.current = true;
-
-    if (Array.isArray(snap.items)) {
-      setItems(snap.items);
-    }
-
-    if (typeof snap.nextPage === "number" || snap.nextPage === null) {
-      setNextPage(snap.nextPage);
-    }
-
-    setHasSearched(true);
-
-    requestAnimationFrame(() => {
-      window.scrollTo(0, snap.scrollY ?? 0);
-
-      setTimeout(() => {
-        restoringRef.current = false;
-      }, 50);
-    });
-  } catch {
-    // ignore
-  }
-}, [mounted]);
+  }, [mounted]);
 
   useEffect(() => {
     if (!mounted || !paramsHydrated || restoringRef.current) return;
@@ -261,6 +284,7 @@ export default function HomePage() {
     const nextYear = cleanParam(year);
     const nextMinRating = cleanParam(minRating);
     const nextMinVotes = cleanParam(minVotes);
+    const nextPlatform = cleanParam(platform);
     const nextGenre = cleanParam(genre);
 
     const sp = new URLSearchParams();
@@ -270,6 +294,7 @@ export default function HomePage() {
     if (nextYear) sp.set("year", nextYear);
     if (nextMinRating) sp.set("minRating", nextMinRating);
     if (nextMinVotes) sp.set("minVotes", nextMinVotes);
+    if (nextPlatform) sp.set("platform", nextPlatform);
     if (nextGenre) sp.set("g", nextGenre);
 
     const qs = sp.toString();
@@ -277,7 +302,7 @@ export default function HomePage() {
 
     window.history.replaceState(null, "", nextUrl);
     setCurrentFromUrl(nextUrl);
-  }, [mounted, paramsHydrated, q, type, year, minRating, minVotes, genre]);
+  }, [mounted, paramsHydrated, q, type, year, minRating, minVotes, platform, genre]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -285,19 +310,29 @@ export default function HomePage() {
     let cancelled = false;
 
     (async () => {
-      try {
-        const [m, t] = await Promise.all([
-          tmdb("genre/movie/list", { language: "tr-TR" }),
-          tmdb("genre/tv/list", { language: "tr-TR" }),
-        ]);
+      const [mGenres, tGenres, mProviders, tProviders] = await Promise.allSettled([
+        tmdb("genre/movie/list", { language: "tr-TR" }),
+        tmdb("genre/tv/list", { language: "tr-TR" }),
+        tmdb("watch/providers/movie", { language: "tr-TR", watch_region: "TR" }),
+        tmdb("watch/providers/tv", { language: "tr-TR", watch_region: "TR" }),
+      ]);
 
-        if (cancelled) return;
+      if (cancelled) return;
 
-        setMovieGenres(m?.genres ?? []);
-        setTvGenres(t?.genres ?? []);
-      } catch {
-        // ignore
+      if (mGenres.status === "fulfilled") {
+        setMovieGenres(mGenres.value?.genres ?? []);
       }
+
+      if (tGenres.status === "fulfilled") {
+        setTvGenres(tGenres.value?.genres ?? []);
+      }
+
+      const movieProviders =
+        mProviders.status === "fulfilled" ? mProviders.value?.results ?? [] : [];
+      const tvProviders =
+        tProviders.status === "fulfilled" ? tProviders.value?.results ?? [] : [];
+
+      setPlatformOptions(dedupeProviders([...(movieProviders ?? []), ...(tvProviders ?? [])]));
     })();
 
     return () => {
@@ -354,6 +389,7 @@ export default function HomePage() {
 
     try {
       const cleanGenre = cleanParam(genre);
+      const cleanPlatform = cleanParam(platform);
 
       const gM = cleanGenre ? cleanGenre : null;
       const gT = cleanGenre ? cleanGenre : null;
@@ -364,6 +400,7 @@ export default function HomePage() {
         year: cleanParam(year),
         minRating: cleanParam(minRating),
         minVotes: cleanParam(minVotes),
+        platform: cleanPlatform,
         gM: type === "tv" ? null : gM,
         gT: type === "movie" ? null : gT,
         page: requestPage,
@@ -381,7 +418,7 @@ export default function HomePage() {
         });
       }
     } catch (e: any) {
-      setErr(e?.message ?? 'Hata');
+      setErr(e?.message ?? "Hata");
     } finally {
       setLoading(false);
       loadLockRef.current = false;
@@ -415,6 +452,7 @@ export default function HomePage() {
     setYear("");
     setMinRating("");
     setMinVotes("");
+    setPlatform("");
     setGenre("");
     setItems([]);
     setNextPage(null);
@@ -491,13 +529,20 @@ export default function HomePage() {
     if (cleanParam(minRating)) out.push(`IMDb ≥ ${cleanParam(minRating)}`);
     if (cleanParam(minVotes)) out.push(`Oy ≥ ${cleanParam(minVotes)}`);
 
+    if (cleanParam(platform)) {
+      const platformName = platformOptions.find(
+        (p) => String(p.provider_id) === cleanParam(platform)
+      )?.provider_name;
+      out.push(`Platform: ${platformName ?? cleanParam(platform)}`);
+    }
+
     if (cleanParam(genre)) {
       const genreName = mergedGenres.find((g) => g.id === cleanParam(genre))?.name;
       out.push(`Kategori: ${genreName ?? cleanParam(genre)}`);
     }
 
     return out;
-  }, [q, type, year, minRating, minVotes, genre, mergedGenres]);
+  }, [q, type, year, minRating, minVotes, platform, genre, mergedGenres, platformOptions]);
 
   function Card({ x }: { x: Item }) {
     const poster = buildPoster(x.poster_path);
@@ -612,105 +657,118 @@ export default function HomePage() {
         <h1 className="text-3xl font-bold tracking-tight text-zinc-900">🎬 Movie / TV Search</h1>
       </div>
 
-      <section className="mb-6 rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="İsim (opsiyonel)"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="none"
-            spellCheck={false}
-            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none ring-0 transition focus:border-zinc-500"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") startSearch();
-            }}
-          />
+    <section className="mb-6 rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
+  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <input
+      value={q}
+      onChange={(e) => setQ(e.target.value)}
+      placeholder="İsim (opsiyonel)"
+      autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize="none"
+      spellCheck={false}
+      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none ring-0 transition focus:border-zinc-500"
+      onKeyDown={(e) => {
+        if (e.key === "Enter") startSearch();
+      }}
+    />
 
-          <select
-            value={safeInputValue(type) || "all"}
-            onChange={(e) => setType(parseType(e.target.value))}
-            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-          >
-            <option value="all">Hepsi</option>
-            <option value="movie">Film</option>
-            <option value="tv">Dizi</option>
-          </select>
+    <select
+      value={safeInputValue(type) || "all"}
+      onChange={(e) => setType(parseType(e.target.value))}
+      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+    >
+      <option value="all">Hepsi</option>
+      <option value="movie">Film</option>
+      <option value="tv">Dizi</option>
+    </select>
 
-          <select
-            value={safeInputValue(genre)}
-            onChange={(e) => setGenre(e.target.value)}
-            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-          >
-            <option value="">Tür (opsiyonel)</option>
-            {mergedGenres.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.name}
-              </option>
-            ))}
-          </select>
+    <select
+      value={safeInputValue(genre)}
+      onChange={(e) => setGenre(e.target.value)}
+      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+    >
+      <option value="">Tür (opsiyonel)</option>
+      {mergedGenres.map((g) => (
+        <option key={g.id} value={g.id}>
+          {g.name}
+        </option>
+      ))}
+    </select>
 
-          <input
-            value={safeInputValue(year)}
-            onChange={(e) => setYear(e.target.value.replace(/[^\d]/g, "").slice(0, 4))}
-            placeholder="Yıl"
-            autoComplete="off"
-            inputMode="numeric"
-            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") startSearch();
-            }}
-          />
+    <input
+      value={safeInputValue(year)}
+      onChange={(e) => setYear(e.target.value.replace(/[^\d]/g, "").slice(0, 4))}
+      placeholder="Yıl"
+      autoComplete="off"
+      inputMode="numeric"
+      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+      onKeyDown={(e) => {
+        if (e.key === "Enter") startSearch();
+      }}
+    />
 
-          <input
-            value={safeInputValue(minRating)}
-            onChange={(e) => {
-              const v = e.target.value.replace(/[^0-9.]/g, "");
-              setMinRating(v);
-            }}
-            placeholder="Min IMDb puanı"
-            autoComplete="off"
-            inputMode="decimal"
-            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") startSearch();
-            }}
-          />
+    <input
+      value={safeInputValue(minRating)}
+      onChange={(e) => {
+        const v = e.target.value.replace(/[^0-9.]/g, "");
+        setMinRating(v);
+      }}
+      placeholder="Min IMDb puanı"
+      autoComplete="off"
+      inputMode="decimal"
+      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+      onKeyDown={(e) => {
+        if (e.key === "Enter") startSearch();
+      }}
+    />
 
-          <input
-            value={safeInputValue(minVotes)}
-            onChange={(e) => setMinVotes(e.target.value.replace(/[^\d]/g, ""))}
-            placeholder="Min IMDb oy"
-            autoComplete="off"
-            inputMode="numeric"
-            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") startSearch();
-            }}
-          />
+    <input
+      value={safeInputValue(minVotes)}
+      onChange={(e) => setMinVotes(e.target.value.replace(/[^\d]/g, ""))}
+      placeholder="Min IMDb oy"
+      autoComplete="off"
+      inputMode="numeric"
+      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+      onKeyDown={(e) => {
+        if (e.key === "Enter") startSearch();
+      }}
+    />
 
-          <div className="flex gap-3 sm:col-span-2 lg:col-span-2">
-            <button
-              type="button"
-              onClick={startSearch}
-              disabled={loading}
-              className="h-12 flex-1 rounded-2xl bg-black px-5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {loading ? "Aranıyor..." : "Ara"}
-            </button>
+    <select
+      value={safeInputValue(platform)}
+      onChange={(e) => setPlatform(e.target.value)}
+      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+    >
+      <option value="">Platform (opsiyonel)</option>
+      {platformOptions.map((provider) => (
+        <option key={provider.provider_id} value={provider.provider_id}>
+          {provider.provider_name}
+        </option>
+      ))}
+    </select>
 
-            <button
-              type="button"
-              onClick={clearFilters}
-              disabled={loading}
-              className="h-12 rounded-2xl border border-zinc-300 px-4 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Temizle
-            </button>
-          </div>
-        </div>
-      </section>
+    <div className="flex h-12 items-center gap-2">
+      <button
+        type="button"
+        onClick={startSearch}
+        disabled={loading}
+        className="h-12 flex-1 rounded-2xl bg-black px-5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {loading ? "Aranıyor..." : "Ara"}
+      </button>
+
+      <button
+        type="button"
+        onClick={clearFilters}
+        disabled={loading}
+        className="h-12 rounded-2xl border border-zinc-300 px-4 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        Temizle
+      </button>
+    </div>
+  </div>
+</section>
 
       {activeFilters.length > 0 ? (
         <div className="mb-6 flex flex-wrap gap-2">

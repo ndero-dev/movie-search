@@ -40,6 +40,7 @@ type EnrichedItem = Item & {
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TARGET_BATCH_SIZE = 20;
 const MAX_SOURCE_PAGES_PER_REQUEST = 20;
+const WATCH_REGION = "TR";
 
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
@@ -112,6 +113,33 @@ async function tmdbFetch(path: string, qs?: Record<string, any>) {
   }
 
   return { ok: r.ok, status: r.status, json };
+}
+
+async function safeDiscover(
+  mediaType: MediaType,
+  qs: Record<string, any>,
+  providerSelected: boolean
+) {
+  const result = await tmdbFetch(`discover/${mediaType}`, qs);
+
+  if (result.ok) return result;
+
+  // Provider seçiliyse bazı provider ID'leri movie veya tv tarafının birinde 400 dönebiliyor.
+  // Bu durumda ilgili tarafı boş sonuç kabul edip diğer tarafla devam ediyoruz.
+  if (providerSelected && result.status === 400) {
+    return {
+      ok: true,
+      status: 200,
+      json: {
+        page: qs.page ?? 1,
+        results: [],
+        total_pages: 0,
+        total_results: 0,
+      },
+    };
+  }
+
+  return result;
 }
 
 function normalizeResults(arr: any[], forcedType?: MediaType): Item[] {
@@ -271,6 +299,64 @@ const ENRICH_CACHE: Map<
   }
 > = g.__SEARCH_ENRICH_CACHE__ ?? (g.__SEARCH_ENRICH_CACHE__ = new Map());
 
+const PROVIDER_CACHE: Map<
+  string,
+  {
+    exp: number;
+    providerIds: number[];
+  }
+> = g.__SEARCH_PROVIDER_CACHE__ ?? (g.__SEARCH_PROVIDER_CACHE__ = new Map());
+
+async function getProviderIds(item: Item): Promise<number[]> {
+  const cacheKey = `${item.media_type}:${item.id}:${WATCH_REGION}`;
+  const now = Date.now();
+  const cached = PROVIDER_CACHE.get(cacheKey);
+
+  if (cached && cached.exp > now) {
+    return cached.providerIds;
+  }
+
+  const TMDB_TOKEN = process.env.TMDB_BEARER_TOKEN;
+  if (!TMDB_TOKEN) return [];
+
+  try {
+    const url = `${TMDB_BASE}/${item.media_type}/${item.id}/watch/providers`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${TMDB_TOKEN}` },
+      next: { revalidate: 86400 },
+    });
+
+    if (!res.ok) return [];
+
+    const json = (await res.json()) as AnyObj;
+    const regionData = json?.results?.[WATCH_REGION] ?? null;
+    const providers = [
+      ...(Array.isArray(regionData?.flatrate) ? regionData.flatrate : []),
+      ...(Array.isArray(regionData?.ads) ? regionData.ads : []),
+      ...(Array.isArray(regionData?.free) ? regionData.free : []),
+      ...(Array.isArray(regionData?.rent) ? regionData.rent : []),
+      ...(Array.isArray(regionData?.buy) ? regionData.buy : []),
+    ];
+
+    const providerIds = Array.from(
+      new Set(
+        providers
+          .map((provider: AnyObj) => Number(provider?.provider_id))
+          .filter((providerId: number) => Number.isFinite(providerId) && providerId > 0)
+      )
+    );
+
+    PROVIDER_CACHE.set(cacheKey, {
+      exp: now + 24 * 3600_000,
+      providerIds,
+    });
+
+    return providerIds;
+  } catch {
+    return [];
+  }
+}
+
 async function enrichOne(item: Item): Promise<EnrichedItem> {
   const cacheKey = `${item.media_type}:${item.id}`;
   const now = Date.now();
@@ -384,14 +470,17 @@ export async function GET(req: Request) {
     const year = url.searchParams.get("year") ?? "";
     const minRating = url.searchParams.get("minRating") ?? "";
     const minVotes = url.searchParams.get("minVotes") ?? "";
+    const platform = url.searchParams.get("platform") ?? "";
     const genreMovie = url.searchParams.get("gM") ?? "";
     const genreTv = url.searchParams.get("gT") ?? "";
     const startPage = Math.max(1, Number(url.searchParams.get("page") ?? "1"));
 
     const minRRaw = parseNumber(minRating, null);
     const minVRaw = parseNumber(minVotes, null);
+    const selectedProviderId = parseNumber(platform, null);
     const minR = minRRaw != null ? clamp(minRRaw, 0, 10) : null;
     const minV = minVRaw != null ? Math.max(0, minVRaw) : null;
+    const providerSelected = selectedProviderId != null;
 
     let sourcePage = startPage;
     let totalPages = Number.POSITIVE_INFINITY;
@@ -447,26 +536,44 @@ export async function GET(req: Request) {
           language: "tr-TR",
           include_adult: "false",
           page: sourcePage,
+          watch_region: providerSelected ? WATCH_REGION : undefined,
+          with_watch_providers: providerSelected ? selectedProviderId : undefined,
         };
 
         const [m, t] = await Promise.all([
           wantMovie
-            ? tmdbFetch("discover/movie", {
-                ...common,
-                sort_by: "vote_count.desc",
-                primary_release_year: year || undefined,
-                with_genres: genreMovie || undefined,
-              })
-            : Promise.resolve({ ok: true, status: 200, json: null }),
+            ? safeDiscover(
+                "movie",
+                {
+                  ...common,
+                  sort_by: "vote_count.desc",
+                  primary_release_year: year || undefined,
+                  with_genres: genreMovie || undefined,
+                },
+                providerSelected
+              )
+            : Promise.resolve({
+                ok: true,
+                status: 200,
+                json: { results: [], total_pages: 0, total_results: 0 },
+              }),
 
           wantTv
-            ? tmdbFetch("discover/tv", {
-                ...common,
-                sort_by: "vote_count.desc",
-                first_air_date_year: year || undefined,
-                with_genres: genreTv || undefined,
-              })
-            : Promise.resolve({ ok: true, status: 200, json: null }),
+            ? safeDiscover(
+                "tv",
+                {
+                  ...common,
+                  sort_by: "vote_count.desc",
+                  first_air_date_year: year || undefined,
+                  with_genres: genreTv || undefined,
+                },
+                providerSelected
+              )
+            : Promise.resolve({
+                ok: true,
+                status: 200,
+                json: { results: [], total_pages: 0, total_results: 0 },
+              }),
         ]);
 
         if (!m.ok || !t.ok) {
@@ -483,13 +590,26 @@ export async function GET(req: Request) {
           (a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1)
         );
 
-        totalPages = Math.max(m.json?.total_pages ?? 1, t.json?.total_pages ?? 1);
+        totalPages = Math.max(m.json?.total_pages ?? 0, t.json?.total_pages ?? 0, 1);
       }
 
       scannedCount += 1;
 
       const deduped = dedupeItems(merged);
-      const enriched = await Promise.all(deduped.map((item) => enrichOne(item)));
+
+      const providerFiltered =
+        providerSelected && q
+          ? (
+              await Promise.all(
+                deduped.map(async (item) => {
+                  const providerIds = await getProviderIds(item);
+                  return providerIds.includes(selectedProviderId!) ? item : null;
+                })
+              )
+            ).filter(Boolean) as Item[]
+          : deduped;
+
+      const enriched = await Promise.all(providerFiltered.map((item) => enrichOne(item)));
 
       const filtered = enriched.filter((x) => {
         const effectiveRating = getEffectiveRating(x);
