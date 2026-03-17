@@ -168,6 +168,7 @@ export default function HomePage() {
   const restoringRef = useRef(false);
   const loadLockRef = useRef(false);
   const lastRequestedPageRef = useRef<number | null>(null);
+  
 
   useEffect(() => {
     setMounted(true);
@@ -198,39 +199,60 @@ export default function HomePage() {
     setParamsHydrated(true);
   }, [mounted]);
 
-  useEffect(() => {
-    if (!mounted) return;
+ useEffect(() => {
+  if (!mounted) return;
 
-    try {
-      const flag = sessionStorage.getItem(RESTORE_FLAG_KEY);
-      if (flag !== "1") return;
+  try {
+    const raw = sessionStorage.getItem(SNAPSHOT_KEY);
+    if (!raw) return;
 
+    const snap = JSON.parse(raw) as {
+      url?: string;
+      scrollY?: number;
+      items?: Item[];
+      nextPage?: number | null;
+      ts?: number;
+    };
+
+    const currentUrl = `${window.location.pathname}${window.location.search || ""}`;
+    const flag = sessionStorage.getItem(RESTORE_FLAG_KEY);
+    const hasRestoreFlag = flag === "1";
+    const sameUrl = snap?.url === currentUrl;
+    const isFresh =
+      typeof snap?.ts === "number"
+        ? Date.now() - snap.ts < 1000 * 60 * 30
+        : true;
+
+    if (!isFresh) return;
+    if (!hasRestoreFlag && !sameUrl) return;
+
+    if (hasRestoreFlag) {
       sessionStorage.removeItem(RESTORE_FLAG_KEY);
-
-      const raw = sessionStorage.getItem(SNAPSHOT_KEY);
-      if (!raw) return;
-
-      const snap = JSON.parse(raw);
-
-      restoringRef.current = true;
-
-      if (Array.isArray(snap.items)) setItems(snap.items);
-      if (typeof snap.nextPage === "number" || snap.nextPage === null) {
-        setNextPage(snap.nextPage);
-      }
-
-      setHasSearched(true);
-
-      requestAnimationFrame(() => {
-        window.scrollTo(0, snap.scrollY ?? 0);
-        setTimeout(() => {
-          restoringRef.current = false;
-        }, 50);
-      });
-    } catch {
-      // ignore
     }
-  }, [mounted]);
+
+    restoringRef.current = true;
+
+    if (Array.isArray(snap.items)) {
+      setItems(snap.items);
+    }
+
+    if (typeof snap.nextPage === "number" || snap.nextPage === null) {
+      setNextPage(snap.nextPage);
+    }
+
+    setHasSearched(true);
+
+    requestAnimationFrame(() => {
+      window.scrollTo(0, snap.scrollY ?? 0);
+
+      setTimeout(() => {
+        restoringRef.current = false;
+      }, 50);
+    });
+  } catch {
+    // ignore
+  }
+}, [mounted]);
 
   useEffect(() => {
     if (!mounted || !paramsHydrated || restoringRef.current) return;
