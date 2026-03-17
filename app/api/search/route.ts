@@ -181,9 +181,16 @@ function applyBaseFilters(
 
   return list.filter((x) => {
     if (type !== "all" && x.media_type !== type) return false;
-    if (y && parseInt(x.year ?? "", 10) !== y) return false;
+
+    if (y) {
+      const itemYear = parseInt(x.year ?? "", 10);
+      if (!Number.isFinite(itemYear)) return false;
+      if (itemYear < y) return false;
+    }
+
     if (x.media_type === "movie" && gm && !x.genre_ids.includes(gm)) return false;
     if (x.media_type === "tv" && gt && !x.genre_ids.includes(gt)) return false;
+
     return true;
   });
 }

@@ -1,4 +1,6 @@
 import BackToSearchLink from "@/app/components/BackToSearchLink";
+import FavoriteButton from "@/app/components/FavoriteButton";
+import WatchedButton from "@/app/components/WatchedButton";
 import {
   getCachedDetail,
   getCachedExtraRatings,
@@ -11,6 +13,7 @@ type SP = { from?: string | string[] };
 function decodeFrom(sp: SP | undefined) {
   const fromRaw = Array.isArray(sp?.from) ? sp?.from?.[0] : sp?.from;
   let from = "/";
+
   if (typeof fromRaw === "string" && fromRaw.length > 0) {
     try {
       from = decodeURIComponent(fromRaw);
@@ -18,6 +21,7 @@ function decodeFrom(sp: SP | undefined) {
       from = fromRaw;
     }
   }
+
   return from.startsWith("/") ? from : "/";
 }
 
@@ -30,10 +34,9 @@ function ratingBox(
 
   return (
     <div className="rounded-xl border border-zinc-200 px-3 py-2 text-sm">
-      <div className="font-medium text-zinc-800">{label}</div>
-      <div className="text-zinc-700">
-        {value}
-        {votes != null && votes !== "" ? ` (${votes})` : ""}
+      <div className="text-xs text-zinc-500">{label}</div>
+      <div className="font-medium text-zinc-900">
+        {value} {votes != null && votes !== "" ? ` (${votes})` : ""}
       </div>
     </div>
   );
@@ -43,33 +46,26 @@ function providerIcons(items: WatchProviderItem[] = []) {
   if (!items.length) return null;
 
   return (
-    <div className="mt-6 flex justify-center">
-      <div className="flex flex-wrap justify-center gap-6">
-        {items.map((item) => (
-          <div
-            key={item.provider_id}
-            className="flex w-[92px] flex-col items-center text-center"
-            title={item.provider_name}
-          >
-            {item.logo_path ? (
-              <img
-                src={item.logo_path}
-                alt={item.provider_name}
-                className="h-[46px] w-[46px] rounded-xl border border-zinc-200 object-cover"
-                loading="lazy"
-              />
-            ) : (
-              <div className="flex h-[46px] w-[46px] items-center justify-center rounded-xl border border-zinc-200 bg-zinc-100 text-[10px] text-zinc-500">
-                N/A
-              </div>
-            )}
-
-            <div className="mt-1 text-xs text-zinc-700 text-center">
-              {item.provider_name}
+    <div className="mt-3 flex flex-wrap items-center justify-center gap-3">
+      {items.map((item) => (
+        <div
+          key={item.provider_id}
+          className="flex flex-col items-center gap-1 text-center text-xs text-zinc-600"
+        >
+          {item.logo_path ? (
+            <img
+              src={`https://image.tmdb.org/t/p/w92${item.logo_path}`}
+              alt={item.provider_name}
+              className="h-10 w-10 rounded-xl border border-zinc-200 bg-white object-contain p-1"
+            />
+          ) : (
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-200 bg-zinc-100 text-[10px]">
+              N/A
             </div>
-          </div>
-        ))}
-      </div>
+          )}
+          <span className="max-w-[72px] leading-tight">{item.provider_name}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -92,22 +88,19 @@ export default async function MoviePage(props: {
 
   if (!m.ok) {
     return (
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24 }}>
-        <BackToSearchLink href={safeFrom} className="underline">
-          ← Aramaya dön
-        </BackToSearchLink>
-
-        <h2 style={{ marginTop: 16 }}>Film bulunamadı (TMDB {m.status})</h2>
-
-        <pre style={{ background: "#f6f6f6", padding: 12, borderRadius: 8, overflow: "auto" }}>
+      <main className="mx-auto max-w-5xl px-4 py-8">
+        <BackToSearchLink fallbackHref={safeFrom} />
+        <h2 className="mt-6 text-2xl font-semibold text-zinc-900">
+          Film bulunamadı (TMDB {m.status})
+        </h2>
+        <pre className="mt-4 overflow-auto rounded-2xl bg-zinc-100 p-4 text-sm">
           {JSON.stringify(m.json, null, 2)}
         </pre>
-      </div>
+      </main>
     );
   }
 
   const movie = m.json;
-
   const poster = movie?.poster_path
     ? `https://image.tmdb.org/t/p/w500${movie.poster_path}`
     : null;
@@ -123,42 +116,49 @@ export default async function MoviePage(props: {
   };
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24 }}>
-      <BackToSearchLink href={safeFrom} className="underline">
-        ← Aramaya dön
-      </BackToSearchLink>
+    <main className="mx-auto max-w-5xl px-4 py-8">
+      <BackToSearchLink fallbackHref={safeFrom} />
 
-      <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-[320px_1fr]">
+      <div className="mt-6 grid gap-8 md:grid-cols-[300px_1fr]">
         <div>
           {poster ? (
             <img
               src={poster}
-              alt={movie?.title ?? "poster"}
-              className="block w-full rounded-2xl"
+              alt={movie?.title ?? "Poster"}
+              className="w-full rounded-3xl border border-zinc-200 bg-zinc-100 object-cover shadow-sm"
             />
           ) : (
-            <div className="w-full rounded-2xl bg-zinc-200" style={{ aspectRatio: "2/3" }} />
+            <div className="flex aspect-[2/3] w-full items-center justify-center rounded-3xl border border-zinc-200 bg-zinc-100 text-sm text-zinc-500">
+              Poster yok
+            </div>
           )}
 
           {providerIcons(extra.watchProviders?.results?.flatrate ?? [])}
         </div>
 
         <div>
-          <h1 className="text-3xl font-semibold leading-tight md:text-4xl">
+          <h1 className="text-4xl font-bold tracking-tight text-zinc-900">
             {movie?.title}
           </h1>
 
-          <div className="mt-3 space-y-2 text-zinc-600">
-            <div>
-              Çıkış: {movie?.release_date || "-"} • Süre: {movie?.runtime ?? "-"} dk
-            </div>
+        <div className="flex items-center gap-2">
+        <FavoriteButton mediaType="tv" id={params.id} />
+        <WatchedButton mediaType="tv" id={params.id} />
+        </div>
 
-            <div>
-              Türler: {Array.isArray(movie?.genres) ? movie.genres.map((g: any) => g.name).join(", ") : "-"}
-            </div>
+          <div className="mt-3 text-sm text-zinc-600">
+            Çıkış: {movie?.release_date || "-"} • Süre:{" "}
+            {movie?.runtime ? `${movie.runtime} dk` : "-"}
           </div>
 
-          <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3">
+          <div className="mt-2 text-sm text-zinc-600">
+            Türler:{" "}
+            {Array.isArray(movie?.genres)
+              ? movie.genres.map((g: any) => g.name).join(", ")
+              : "-"}
+          </div>
+
+          <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
             {ratingBox("IMDb", extra.imdbRating, extra.imdbVotes)}
             {ratingBox(
               "TMDB",
@@ -166,41 +166,44 @@ export default async function MoviePage(props: {
               movie?.vote_count ?? null
             )}
             {ratingBox("Trakt", extra.sources?.trakt?.rating ?? null, extra.sources?.trakt?.votes ?? null)}
-            {ratingBox("Tomatoes", extra.sources?.tomatoes?.rating ?? null, extra.sources?.tomatoes?.votes ?? null)}
+            {ratingBox(
+              "Tomatoes",
+              extra.sources?.tomatoes?.rating ?? null,
+              extra.sources?.tomatoes?.votes ?? null
+            )}
             {ratingBox("Popcorn", extra.sources?.popcorn?.rating ?? null, extra.sources?.popcorn?.votes ?? null)}
-            {ratingBox("Metacritic", extra.sources?.metacritic?.rating ?? null, extra.sources?.metacritic?.votes ?? null)}
+            {ratingBox(
+              "Metacritic",
+              extra.sources?.metacritic?.rating ?? null,
+              extra.sources?.metacritic?.votes ?? null
+            )}
           </div>
 
           {movie?.overview ? (
-            <div className="mt-6">
-              <h2 className="mb-2 text-lg font-semibold">Özet</h2>
-              <p className="text-base leading-8 text-zinc-800">{movie.overview}</p>
-            </div>
+            <section className="mt-8">
+              <h2 className="text-xl font-semibold text-zinc-900">Özet</h2>
+              <p className="mt-3 leading-7 text-zinc-700">{movie.overview}</p>
+            </section>
           ) : null}
 
-          <div className="mt-4 flex flex-wrap gap-4 text-sm text-blue-600">
+          <div className="mt-8 flex flex-wrap gap-4 text-sm">
             {extra.turkceAltyaziUrl ? (
               <a
                 href={extra.turkceAltyaziUrl}
-                className="hover:text-blue-800"
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-blue-600 hover:underline"
               >
                 TrOrg
-              </a>
-            ) : null}
-
-            {extra.imdb_id ? (
-              <a
-                href={`https://www.imdb.com/title/${extra.imdb_id}/`}
-                className="hover:text-blue-800"
-              >
-                IMDb
               </a>
             ) : null}
 
             {extra.mdblist?.url ? (
               <a
                 href={extra.mdblist.url}
-                className="hover:text-blue-800"
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-blue-600 hover:underline"
               >
                 MDBList
               </a>
@@ -209,21 +212,27 @@ export default async function MoviePage(props: {
             {movie?.homepage ? (
               <a
                 href={movie.homepage}
-                className="hover:text-blue-800"
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-blue-600 hover:underline"
               >
                 Official
               </a>
             ) : null}
 
-            <a
-              href={`https://www.themoviedb.org/movie/${params.id}`}
-              className="hover:text-blue-800"
-            >
-              TMDB
-            </a>
+            {extra.watchProviders?.results?.link ? (
+              <a
+                href={extra.watchProviders.results.link}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-blue-600 hover:underline"
+              >
+                TMDB
+              </a>
+            ) : null}
           </div>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
