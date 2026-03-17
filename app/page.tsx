@@ -546,7 +546,7 @@ export default function HomePage() {
             <p className="line-clamp-4 text-sm leading-6 text-zinc-700">{x.overview}</p>
           ) : null}
 
-          {(taUrl || x.mdblist?.url) && (
+          {/*(taUrl || x.mdblist?.url) && (
             <div className="flex flex-wrap gap-3 text-sm">
               {taUrl ? (
                 <a
@@ -570,7 +570,7 @@ export default function HomePage() {
                 </a>
               ) : null}
             </div>
-          )}
+          )*/}
         </div>
       </article>
     );
