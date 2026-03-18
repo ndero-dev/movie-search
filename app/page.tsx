@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getFavorites } from "@/app/lib/favorites";
+import { getWatched } from "@/app/lib/watched";
 
 type MediaType = "movie" | "tv";
 
@@ -9,6 +11,8 @@ type Item = {
   id: number;
   media_type: MediaType;
   title: string;
+  original_title?: string | null;
+  original_name?: string | null;
   year: string | null;
   sort_date: string | null;
   poster_path: string | null;
@@ -18,6 +22,7 @@ type Item = {
   genre_ids: number[];
   imdbRating: number | null;
   imdbVotes: number | null;
+  provider_ids?: number[];
   sources?: {
     trakt?: { rating?: number | string | null; votes?: number | string | null };
     tomatoes?: { rating?: number | string | null; votes?: number | string | null };
@@ -164,10 +169,34 @@ function dedupeProviders(list: ProviderOption[]) {
   );
 }
 
+function parseYearFromDate(date?: string | null) {
+  if (!date) return null;
+  const year = date.slice(0, 4);
+  return /^\d{4}$/.test(year) ? year : null;
+}
+
+function normalizeSearchText(value: string | null | undefined) {
+  return (value ?? "")
+    .toLocaleLowerCase("tr-TR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ı/g, "i")
+    .replace(/ç/g, "c")
+    .replace(/ğ/g, "g")
+    .replace(/ö/g, "o")
+    .replace(/ş/g, "s")
+    .replace(/ü/g, "u")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export default function HomePage() {
   const [mounted, setMounted] = useState(false);
 
   const [q, setQ] = useState("");
+  const [favoriteChecked, setFavoriteChecked] = useState(false);
+  const [watchedChecked, setWatchedChecked] = useState(false);
   const [type, setType] = useState<"all" | MediaType>("all");
   const [year, setYear] = useState("");
   const [minRating, setMinRating] = useState("");
@@ -184,13 +213,16 @@ export default function HomePage() {
 
   const [items, setItems] = useState<Item[]>([]);
   const [nextPage, setNextPage] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [loadMoreLoading, setLoadMoreLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
 
   const restoringRef = useRef(false);
   const loadLockRef = useRef(false);
   const lastRequestedPageRef = useRef<number | null>(null);
+
+  const loading = searchLoading || loadMoreLoading;
 
   useEffect(() => {
     setMounted(true);
@@ -211,6 +243,8 @@ export default function HomePage() {
     const sp = new URLSearchParams(window.location.search);
 
     setQ(cleanParam(sp.get("q")));
+    setFavoriteChecked(sp.get("fav") === "1");
+    setWatchedChecked(sp.get("watched") === "1");
     setType(parseType(cleanParam(sp.get("type")) || "all"));
     setYear(cleanParam(sp.get("year")));
     setMinRating(cleanParam(sp.get("minRating")));
@@ -290,6 +324,8 @@ export default function HomePage() {
     const sp = new URLSearchParams();
 
     if (nextQ) sp.set("q", nextQ);
+    if (favoriteChecked) sp.set("fav", "1");
+    if (watchedChecked) sp.set("watched", "1");
     sp.set("type", type);
     if (nextYear) sp.set("year", nextYear);
     if (nextMinRating) sp.set("minRating", nextMinRating);
@@ -302,7 +338,19 @@ export default function HomePage() {
 
     window.history.replaceState(null, "", nextUrl);
     setCurrentFromUrl(nextUrl);
-  }, [mounted, paramsHydrated, q, type, year, minRating, minVotes, platform, genre]);
+  }, [
+    mounted,
+    paramsHydrated,
+    q,
+    favoriteChecked,
+    watchedChecked,
+    type,
+    year,
+    minRating,
+    minVotes,
+    platform,
+    genre,
+  ]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -380,11 +428,189 @@ export default function HomePage() {
     }
   }
 
+  function passesLocalFilters(item: Item) {
+    const cleanQ = normalizeSearchText(q);
+    const cleanYear = cleanParam(year);
+    const cleanMinRating = cleanParam(minRating);
+    const cleanMinVotes = cleanParam(minVotes);
+    const cleanGenre = cleanParam(genre);
+    const cleanPlatform = cleanParam(platform);
+
+    if (cleanQ) {
+      const searchPool = normalizeSearchText(
+        [item.title ?? "", item.original_title ?? "", item.original_name ?? ""].join(" ")
+      );
+
+      if (!searchPool.includes(cleanQ)) return false;
+    }
+
+    if (type !== "all" && item.media_type !== type) return false;
+
+    if (cleanYear) {
+      const y = Number(cleanYear);
+      const itemYear = Number(item.year ?? "");
+      if (!Number.isFinite(itemYear) || itemYear < y) return false;
+    }
+
+    if (cleanMinRating) {
+      const r = Number(cleanMinRating);
+      const itemRating = item.imdbRating ?? item.vote_average ?? null;
+      if (itemRating == null || itemRating < r) return false;
+    }
+
+    if (cleanMinVotes) {
+      const v = Number(cleanMinVotes);
+      const itemVotes = item.imdbVotes ?? item.vote_count ?? null;
+      if (itemVotes == null || itemVotes < v) return false;
+    }
+
+    if (cleanGenre) {
+      const genreId = Number(cleanGenre);
+      if (!item.genre_ids.includes(genreId)) return false;
+    }
+
+    if (cleanPlatform) {
+      const providerId = Number(cleanPlatform);
+      const providerIds = item.provider_ids ?? [];
+      if (!providerIds.includes(providerId)) return false;
+    }
+
+    return true;
+  }
+
+  async function buildSavedItem(mediaType: MediaType, id: number, selectedPlatform: string) {
+    async function fetchDetailWithType(typeToTry: MediaType) {
+      try {
+        const detail = await tmdb(`${typeToTry}/${id}`, { language: "tr-TR" });
+        if (!detail?.id) return null;
+        return { detail, mediaType: typeToTry };
+      } catch {
+        return null;
+      }
+    }
+
+    const primary = await fetchDetailWithType(mediaType);
+    const fallback =
+      primary ?? (await fetchDetailWithType(mediaType === "movie" ? "tv" : "movie"));
+
+    if (!fallback) return null;
+
+    const { detail, mediaType: resolvedMediaType } = fallback;
+
+    let providerIds: number[] = [];
+
+    try {
+      const providerJson = await tmdb(`${resolvedMediaType}/${id}/watch/providers`, {});
+      const regionData = providerJson?.results?.TR ?? null;
+      const providers = [
+        ...(Array.isArray(regionData?.flatrate) ? regionData.flatrate : []),
+        ...(Array.isArray(regionData?.ads) ? regionData.ads : []),
+        ...(Array.isArray(regionData?.free) ? regionData.free : []),
+        ...(Array.isArray(regionData?.rent) ? regionData.rent : []),
+        ...(Array.isArray(regionData?.buy) ? regionData.buy : []),
+      ];
+
+      providerIds = Array.from(
+        new Set(
+          providers
+            .map((provider: any) => Number(provider?.provider_id))
+            .filter((providerId: number) => Number.isFinite(providerId) && providerId > 0)
+        )
+      );
+    } catch {
+      providerIds = [];
+    }
+
+    const item: Item = {
+      id: detail.id,
+      media_type: resolvedMediaType,
+      title: detail.title ?? detail.name ?? "",
+      original_title: detail.original_title ?? null,
+      original_name: detail.original_name ?? null,
+      year: parseYearFromDate(detail.release_date ?? detail.first_air_date),
+      sort_date: detail.release_date ?? detail.first_air_date ?? null,
+      poster_path: detail.poster_path ?? null,
+      overview: detail.overview ?? null,
+      vote_average: typeof detail.vote_average === "number" ? detail.vote_average : null,
+      vote_count: typeof detail.vote_count === "number" ? detail.vote_count : null,
+      genre_ids: Array.isArray(detail.genres) ? detail.genres.map((g: any) => g.id) : [],
+      imdbRating: null,
+      imdbVotes: null,
+      provider_ids: providerIds,
+    };
+
+    if (selectedPlatform) {
+      const selectedProviderId = Number(selectedPlatform);
+      if (!item.provider_ids?.includes(selectedProviderId)) {
+        return null;
+      }
+    }
+
+    return item.title ? item : null;
+  }
+
+  async function loadSavedItems() {
+    if (loadLockRef.current) return;
+
+    loadLockRef.current = true;
+    setSearchLoading(true);
+    setErr(null);
+
+    try {
+      const favoriteKeys = favoriteChecked ? getFavorites() : [];
+      const watchedKeys = watchedChecked ? getWatched() : [];
+
+      const mergedKeys = Array.from(new Set([...favoriteKeys, ...watchedKeys]));
+      const selectedPlatform = cleanParam(platform);
+
+      const pairs = mergedKeys
+        .map((key) => {
+          const [mediaType, rawId] = key.split(":");
+          const id = Number(rawId);
+
+          if ((mediaType !== "movie" && mediaType !== "tv") || !Number.isInteger(id) || id <= 0) {
+            return null;
+          }
+
+          return { mediaType: mediaType as MediaType, id };
+        })
+        .filter(Boolean) as { mediaType: MediaType; id: number }[];
+
+      const savedItems = await Promise.all(
+        pairs.map((pair) => buildSavedItem(pair.mediaType, pair.id, selectedPlatform))
+      );
+
+      const nextItems = dedupeItems(
+        savedItems.filter((item): item is Item => Boolean(item)).filter((item) => passesLocalFilters(item))
+      ).sort((a, b) => {
+        const aVotes = a.vote_count ?? -1;
+        const bVotes = b.vote_count ?? -1;
+        return bVotes - aVotes;
+      });
+
+      setItems(nextItems);
+      setNextPage(null);
+    } catch (e: any) {
+      setErr(e?.message ?? "Hata");
+      setItems([]);
+      setNextPage(null);
+    } finally {
+      setSearchLoading(false);
+      loadLockRef.current = false;
+    }
+  }
+
   async function runSearch(requestPage: number, append: boolean) {
     if (loadLockRef.current) return;
 
     loadLockRef.current = true;
-    setLoading(true);
+
+    if (append) {
+      setLoadMoreLoading(true);
+    } else {
+      setSearchLoading(true);
+    }
+
     setErr(null);
 
     try {
@@ -420,12 +646,17 @@ export default function HomePage() {
     } catch (e: any) {
       setErr(e?.message ?? "Hata");
     } finally {
-      setLoading(false);
+      if (append) {
+        setLoadMoreLoading(false);
+      } else {
+        setSearchLoading(false);
+      }
+
       loadLockRef.current = false;
     }
   }
 
-  function startSearch() {
+  async function startSearch() {
     if (loading) return;
 
     setHasSearched(true);
@@ -433,10 +664,16 @@ export default function HomePage() {
     setNextPage(null);
     lastRequestedPageRef.current = null;
 
+    if (favoriteChecked || watchedChecked) {
+      await loadSavedItems();
+      return;
+    }
+
     void runSearch(1, false);
   }
 
   async function loadMore() {
+    if (favoriteChecked || watchedChecked) return;
     if (nextPage == null) return;
     if (loading) return;
     if (loadLockRef.current) return;
@@ -448,6 +685,8 @@ export default function HomePage() {
 
   function clearFilters() {
     setQ("");
+    setFavoriteChecked(false);
+    setWatchedChecked(false);
     setType("all");
     setYear("");
     setMinRating("");
@@ -464,6 +703,7 @@ export default function HomePage() {
   }
 
   function checkShouldLoadMore() {
+    if (favoriteChecked || watchedChecked) return;
     if (!mounted) return;
     if (!hasSearched) return;
     if (restoringRef.current) return;
@@ -505,11 +745,12 @@ export default function HomePage() {
       window.removeEventListener("resize", onResize);
       window.clearTimeout(t);
     };
-  }, [mounted, hasSearched, nextPage, loading]);
+  }, [mounted, hasSearched, nextPage, loading, favoriteChecked, watchedChecked]);
 
   useEffect(() => {
     if (!mounted) return;
     if (!hasSearched) return;
+    if (favoriteChecked || watchedChecked) return;
 
     const t = window.setTimeout(() => {
       checkShouldLoadMore();
@@ -518,14 +759,17 @@ export default function HomePage() {
     return () => {
       window.clearTimeout(t);
     };
-  }, [mounted, items.length, hasSearched, nextPage, loading]);
+  }, [mounted, items.length, hasSearched, nextPage, loading, favoriteChecked, watchedChecked]);
 
   const activeFilters = useMemo(() => {
     const out: string[] = [];
 
+    if (favoriteChecked) out.push("Favori");
+    if (watchedChecked) out.push("İzledim");
+
     if (cleanParam(q)) out.push(`Arama: ${cleanParam(q)}`);
     if (type !== "all") out.push(type === "movie" ? "Tür: Film" : "Tür: Dizi");
-    if (cleanParam(year)) out.push(`Yıl: ${cleanParam(year)}`);
+    if (cleanParam(year)) out.push(`Min Yıl: ${cleanParam(year)}`);
     if (cleanParam(minRating)) out.push(`IMDb ≥ ${cleanParam(minRating)}`);
     if (cleanParam(minVotes)) out.push(`Oy ≥ ${cleanParam(minVotes)}`);
 
@@ -542,13 +786,24 @@ export default function HomePage() {
     }
 
     return out;
-  }, [q, type, year, minRating, minVotes, platform, genre, mergedGenres, platformOptions]);
+  }, [
+    favoriteChecked,
+    watchedChecked,
+    q,
+    type,
+    year,
+    minRating,
+    minVotes,
+    platform,
+    genre,
+    mergedGenres,
+    platformOptions,
+  ]);
 
   function Card({ x }: { x: Item }) {
     const poster = buildPoster(x.poster_path);
     const detailHref = `/${x.media_type}/${x.id}?from=${encodeURIComponent(currentFromUrl || "/")}`;
     const src = x.sources ?? {};
-    const taUrl = x.turkceAltyaziUrl ?? null;
     const genres = getGenreNames(x);
 
     return (
@@ -612,32 +867,6 @@ export default function HomePage() {
           {x.overview ? (
             <p className="line-clamp-4 text-sm leading-6 text-zinc-700">{x.overview}</p>
           ) : null}
-
-          {/*(taUrl || x.mdblist?.url) && (
-            <div className="flex flex-wrap gap-3 text-sm">
-              {taUrl ? (
-                <a
-                  href={taUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-medium text-blue-600 hover:underline"
-                >
-                  TrOrg
-                </a>
-              ) : null}
-
-              {x.mdblist?.url ? (
-                <a
-                  href={x.mdblist.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-medium text-blue-600 hover:underline"
-                >
-                  MDBList
-                </a>
-              ) : null}
-            </div>
-          )*/}
         </div>
       </article>
     );
@@ -657,118 +886,140 @@ export default function HomePage() {
         <h1 className="text-3xl font-bold tracking-tight text-zinc-900">🎬 Movie / TV Search</h1>
       </div>
 
-    <section className="mb-6 rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
-  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-    <input
-      value={q}
-      onChange={(e) => setQ(e.target.value)}
-      placeholder="İsim (opsiyonel)"
-      autoComplete="off"
-      autoCorrect="off"
-      autoCapitalize="none"
-      spellCheck={false}
-      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none ring-0 transition focus:border-zinc-500"
-      onKeyDown={(e) => {
-        if (e.key === "Enter") startSearch();
-      }}
-    />
+      <section className="mb-6 rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="İsim (opsiyonel)"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none ring-0 transition focus:border-zinc-500"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void startSearch();
+            }}
+          />
 
-    <select
-      value={safeInputValue(type) || "all"}
-      onChange={(e) => setType(parseType(e.target.value))}
-      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-    >
-      <option value="all">Hepsi</option>
-      <option value="movie">Film</option>
-      <option value="tv">Dizi</option>
-    </select>
+          <select
+            value={safeInputValue(type) || "all"}
+            onChange={(e) => setType(parseType(e.target.value))}
+            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+          >
+            <option value="all">Film/Dizi</option>
+            <option value="movie">Film</option>
+            <option value="tv">Dizi</option>
+          </select>
 
-    <select
-      value={safeInputValue(genre)}
-      onChange={(e) => setGenre(e.target.value)}
-      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-    >
-      <option value="">Tür (opsiyonel)</option>
-      {mergedGenres.map((g) => (
-        <option key={g.id} value={g.id}>
-          {g.name}
-        </option>
-      ))}
-    </select>
+          <select
+            value={safeInputValue(genre)}
+            onChange={(e) => setGenre(e.target.value)}
+            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+          >
+            <option value="">Tür</option>
+            {mergedGenres.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </select>
 
-    <input
-      value={safeInputValue(year)}
-      onChange={(e) => setYear(e.target.value.replace(/[^\d]/g, "").slice(0, 4))}
-      placeholder="Yıl"
-      autoComplete="off"
-      inputMode="numeric"
-      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-      onKeyDown={(e) => {
-        if (e.key === "Enter") startSearch();
-      }}
-    />
+          <input
+            value={safeInputValue(year)}
+            onChange={(e) => setYear(e.target.value.replace(/[^\d]/g, "").slice(0, 4))}
+            placeholder="Min Yıl"
+            autoComplete="off"
+            inputMode="numeric"
+            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void startSearch();
+            }}
+          />
 
-    <input
-      value={safeInputValue(minRating)}
-      onChange={(e) => {
-        const v = e.target.value.replace(/[^0-9.]/g, "");
-        setMinRating(v);
-      }}
-      placeholder="Min IMDb puanı"
-      autoComplete="off"
-      inputMode="decimal"
-      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-      onKeyDown={(e) => {
-        if (e.key === "Enter") startSearch();
-      }}
-    />
+          <input
+            value={safeInputValue(minRating)}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^0-9.]/g, "");
+              setMinRating(v);
+            }}
+            placeholder="Min IMDb puanı"
+            autoComplete="off"
+            inputMode="decimal"
+            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void startSearch();
+            }}
+          />
 
-    <input
-      value={safeInputValue(minVotes)}
-      onChange={(e) => setMinVotes(e.target.value.replace(/[^\d]/g, ""))}
-      placeholder="Min IMDb oy"
-      autoComplete="off"
-      inputMode="numeric"
-      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-      onKeyDown={(e) => {
-        if (e.key === "Enter") startSearch();
-      }}
-    />
+          <input
+            value={safeInputValue(minVotes)}
+            onChange={(e) => setMinVotes(e.target.value.replace(/[^\d]/g, ""))}
+            placeholder="Min IMDb oy"
+            autoComplete="off"
+            inputMode="numeric"
+            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void startSearch();
+            }}
+          />
 
-    <select
-      value={safeInputValue(platform)}
-      onChange={(e) => setPlatform(e.target.value)}
-      className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
-    >
-      <option value="">Platform (opsiyonel)</option>
-      {platformOptions.map((provider) => (
-        <option key={provider.provider_id} value={provider.provider_id}>
-          {provider.provider_name}
-        </option>
-      ))}
-    </select>
+          <select
+            value={safeInputValue(platform)}
+            onChange={(e) => setPlatform(e.target.value)}
+            className="h-12 w-full rounded-2xl border border-zinc-300 px-4 outline-none transition focus:border-zinc-500"
+          >
+            <option value="">Platform (opsiyonel)</option>
+            {platformOptions.map((provider) => (
+              <option key={provider.provider_id} value={provider.provider_id}>
+                {provider.provider_name}
+              </option>
+            ))}
+          </select>
 
-    <div className="flex h-12 items-center gap-2">
-      <button
-        type="button"
-        onClick={startSearch}
-        disabled={loading}
-        className="h-12 flex-1 rounded-2xl bg-black px-5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {loading ? "Aranıyor..." : "Ara"}
-      </button>
+          <div className="flex h-12 items-center gap-5 rounded-2xl border border-zinc-300 px-4">
+            <label className="flex items-center gap-2 text-sm text-zinc-700">
+              <input
+                type="checkbox"
+                checked={favoriteChecked}
+                onChange={(e) => setFavoriteChecked(e.target.checked)}
+                className="h-4 w-4"
+              />
+              Favori
+            </label>
 
-      <button
-        type="button"
-        onClick={clearFilters}
-        disabled={loading}
-        className="h-12 rounded-2xl border border-zinc-300 px-4 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        Temizle
-      </button>
-    </div>
-  </div>
-</section>
+            <label className="flex items-center gap-2 text-sm text-zinc-700">
+              <input
+                type="checkbox"
+                checked={watchedChecked}
+                onChange={(e) => setWatchedChecked(e.target.checked)}
+                className="h-4 w-4"
+              />
+              İzledim
+            </label>
+          </div>
+
+          <div className="flex h-12 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void startSearch()}
+              disabled={searchLoading}
+              className="h-12 flex-1 rounded-2xl bg-black px-5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {searchLoading ? "Aranıyor..." : "Ara"}
+            </button>
+
+            <button
+              type="button"
+              onClick={clearFilters}
+              disabled={searchLoading}
+              className="h-12 rounded-2xl border border-zinc-300 px-4 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Temizle
+            </button>
+          </div>
+        </div>
+      </section>
 
       {activeFilters.length > 0 ? (
         <div className="mb-6 flex flex-wrap gap-2">
@@ -795,7 +1046,7 @@ export default function HomePage() {
         </div>
       ) : null}
 
-      {loading && items.length === 0 ? (
+      {searchLoading && items.length === 0 ? (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <div
@@ -814,7 +1065,7 @@ export default function HomePage() {
         </div>
       ) : null}
 
-      {hasSearched && items.length === 0 && !loading ? (
+      {hasSearched && items.length === 0 && !searchLoading ? (
         <div className="rounded-3xl border border-dashed border-zinc-300 bg-zinc-50 px-6 py-10 text-center text-zinc-600">
           Sonuç bulunamadı.
         </div>
@@ -834,11 +1085,11 @@ export default function HomePage() {
         </>
       ) : null}
 
-      {loading && items.length > 0 ? (
+      {loadMoreLoading && items.length > 0 ? (
         <div className="mt-6 text-center text-sm text-zinc-500">Devamı yükleniyor…</div>
       ) : null}
 
-      {nextPage !== null && !loading && items.length > 0 ? (
+      {!favoriteChecked && !watchedChecked && nextPage !== null && !loadMoreLoading && items.length > 0 ? (
         <div className="mt-8 flex justify-center">
           <button
             type="button"
@@ -850,7 +1101,7 @@ export default function HomePage() {
         </div>
       ) : null}
 
-      {hasSearched && nextPage === null && !loading && items.length > 0 ? (
+      {!favoriteChecked && !watchedChecked && hasSearched && nextPage === null && !loadMoreLoading && items.length > 0 ? (
         <div className="mt-6 text-center text-sm text-zinc-500">Sonuçlar bitti.</div>
       ) : null}
     </main>

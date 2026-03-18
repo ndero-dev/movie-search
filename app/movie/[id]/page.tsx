@@ -141,10 +141,10 @@ export default async function MoviePage(props: {
             {movie?.title}
           </h1>
 
-        <div className="flex items-center gap-2">
-        <FavoriteButton mediaType="tv" id={params.id} />
-        <WatchedButton mediaType="tv" id={params.id} />
-        </div>
+          <div className="flex items-center gap-2">
+            <FavoriteButton mediaType="movie" id={params.id} />
+            <WatchedButton mediaType="movie" id={params.id} />
+          </div>
 
           <div className="mt-3 text-sm text-zinc-600">
             Çıkış: {movie?.release_date || "-"} • Süre:{" "}
