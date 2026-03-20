@@ -102,14 +102,14 @@ export async function ensureCatalogSchema() {
 }
 
 export async function getIngestState<T = unknown>(key: string): Promise<T | null> {
-  const rows = (await sql`
+  const rows = await sql`
     SELECT value_json
     FROM ingest_state
     WHERE key = ${key}
     LIMIT 1
-  `) as Array<{ value_json: T }>;
+  `;
 
-  return rows[0]?.value_json ?? null;
+  return (rows as Array<{ value_json: T }>)[0]?.value_json ?? null;
 }
 
 export async function setIngestState(key: string, value: unknown) {
@@ -212,10 +212,10 @@ export async function upsertCatalogItem(row: CatalogItemRow) {
 }
 
 export async function countCatalogItems() {
-  const rows = (await sql`
+  const rows = await sql`
     SELECT COUNT(*)::text AS count
     FROM catalog_items
-  `) as Array<{ count: string }>;
+  `;
 
-  return Number(rows[0]?.count ?? "0");
+  return Number((rows as Array<{ count: string }>)[0]?.count ?? "0");
 }
