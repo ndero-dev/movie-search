@@ -140,6 +140,11 @@ export default async function MoviePage(props: {
           <h1 className="text-4xl font-bold tracking-tight text-zinc-900">
             {movie?.title}
           </h1>
+          {movie?.original_title &&
+          movie.original_title !== movie?.title &&
+          movie.original_title.trim() !== "" ? (
+          <div>{movie.original_title}</div>
+          ) : null}
 
           <div className="flex items-center gap-2">
             <FavoriteButton mediaType="movie" id={params.id} />

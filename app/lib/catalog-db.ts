@@ -38,6 +38,16 @@ export type CatalogItemRow = {
   mdblist_status: MdblistStatus;
 };
 
+export type CatalogItemSnapshot = {
+  media_type: CatalogMediaType;
+  tmdb_id: number;
+  imdb_id: string | null;
+  provider_ids_json: unknown;
+  mdblist_payload_json: unknown | null;
+  is_enriched: boolean;
+  mdblist_status: MdblistStatus;
+};
+
 export async function ensureCatalogSchema() {
   await sql`
     CREATE TABLE IF NOT EXISTS catalog_items (
@@ -121,6 +131,28 @@ export async function setIngestState(key: string, value: unknown) {
       value_json = EXCLUDED.value_json,
       updated_at = NOW()
   `;
+}
+
+export async function getCatalogItemSnapshotByTmdbId(
+  mediaType: CatalogMediaType,
+  tmdbId: number
+): Promise<CatalogItemSnapshot | null> {
+  const rows = await sql`
+    SELECT
+      media_type,
+      tmdb_id,
+      imdb_id,
+      provider_ids_json,
+      mdblist_payload_json,
+      is_enriched,
+      mdblist_status
+    FROM catalog_items
+    WHERE media_type = ${mediaType}
+      AND tmdb_id = ${tmdbId}
+    LIMIT 1
+  `;
+
+  return (rows as Array<CatalogItemSnapshot>)[0] ?? null;
 }
 
 export async function upsertCatalogItem(row: CatalogItemRow) {

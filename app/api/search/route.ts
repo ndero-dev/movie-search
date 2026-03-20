@@ -7,6 +7,8 @@ type Item = {
   id: number;
   media_type: MediaType;
   title: string;
+  original_title?: string | null;
+  original_name?: string | null;
   year: string | null;
   sort_date: string | null;
   poster_path: string | null;
@@ -144,17 +146,25 @@ async function safeDiscover(
 
 function normalizeResults(arr: any[], forcedType?: MediaType): Item[] {
   return (arr ?? [])
-    .filter((x) => (forcedType ? true : x?.media_type === "movie" || x?.media_type === "tv"))
+    .filter((x) =>
+      forcedType ? true : x?.media_type === "movie" || x?.media_type === "tv"
+    )
     .map((x) => {
       const mt: MediaType = forcedType ?? x.media_type;
+
       const title =
-        mt === "tv" ? (x?.name ?? x?.original_name ?? "") : (x?.title ?? x?.original_title ?? "");
+        mt === "tv"
+          ? (x?.name ?? x?.original_name ?? "")
+          : (x?.title ?? x?.original_title ?? "");
+
       const date = mt === "tv" ? x?.first_air_date : x?.release_date;
 
       return {
         id: x?.id,
         media_type: mt,
         title,
+        original_title: mt === "movie" ? (x?.original_title ?? null) : null,
+        original_name: mt === "tv" ? (x?.original_name ?? null) : null,
         year: formatYearFromDate(date),
         sort_date: typeof date === "string" && date ? date : null,
         poster_path: x?.poster_path ?? null,
@@ -167,7 +177,6 @@ function normalizeResults(arr: any[], forcedType?: MediaType): Item[] {
     .filter((x) => x.id && x.title)
     .sort((a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1));
 }
-
 function applyBaseFilters(
   list: Item[],
   type: "all" | MediaType,

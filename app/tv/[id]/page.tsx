@@ -141,6 +141,12 @@ export default async function TvPage(props: {
             {tv?.name}
           </h1>
 
+          {tv?.original_name &&
+          tv.original_name !== tv?.name &&
+          tv.original_name.trim() !== "" ? (
+          <div>{tv.original_name}</div>
+          ) : null}
+
           <div className="flex items-center gap-2">
             <FavoriteButton mediaType="tv" id={params.id} />
             <WatchedButton mediaType="tv" id={params.id} />

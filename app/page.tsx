@@ -835,14 +835,24 @@ export default function HomePage() {
                 <span className="rounded-full bg-zinc-100 px-2.5 py-1">{x.year}</span>
               ) : null}
             </div>
+<Link
+  href={detailHref}
+  onClick={saveSnapshot}
+  className="block hover:underline"
+>
+  <div className="space-y-1">
+    <div className="line-clamp-2 text-lg font-semibold text-zinc-900">
+      {x.title}
+    </div>
 
-            <Link
-              href={detailHref}
-              onClick={saveSnapshot}
-              className="line-clamp-2 block text-lg font-semibold text-zinc-900 hover:underline"
-            >
-              {x.title}
-            </Link>
+    {((x.media_type === "movie" && x.original_title && x.original_title !== x.title) ||
+      (x.media_type === "tv" && x.original_name && x.original_name !== x.title)) ? (
+      <div className="line-clamp-1 text-sm text-zinc-500">
+        {x.media_type === "movie" ? x.original_title : x.original_name}
+      </div>
+    ) : null}
+  </div>
+</Link>
 
             {genres ? <div className="text-sm text-zinc-600">{genres}</div> : null}
           </div>

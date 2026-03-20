@@ -2,16 +2,19 @@ import { NextResponse } from "next/server";
 import {
   countCatalogItems,
   ensureCatalogSchema,
+  getCatalogItemSnapshotByTmdbId,
   getIngestState,
   setIngestState,
   upsertCatalogItem,
   type CatalogItemRow,
   type CatalogMediaType,
+  type CatalogItemSnapshot,
   type MdblistStatus,
 } from "@/app/lib/catalog-db";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const WATCH_REGION = "TR";
+const MAX_TMDB_DISCOVER_PAGE = 500;
 
 const MDBLIST_DAILY_LIMIT = 25000;
 const TARGET_ITEMS_PER_RUN = 1000;
@@ -69,6 +72,9 @@ type IngestRunStats = {
   mdblistHttpErrorCount: number;
   mdblistNetworkErrorCount: number;
   missingImdbIdCount: number;
+  skippedBecauseAlreadyCompleteCount: number;
+  externalIdsFetchCount: number;
+  providersFetchCount: number;
 };
 
 type IngestRunResult = {
@@ -88,6 +94,9 @@ function emptyStats(): IngestRunStats {
     mdblistHttpErrorCount: 0,
     mdblistNetworkErrorCount: 0,
     missingImdbIdCount: 0,
+    skippedBecauseAlreadyCompleteCount: 0,
+    externalIdsFetchCount: 0,
+    providersFetchCount: 0,
   };
 }
 
@@ -104,6 +113,10 @@ function mergeStats(...statsList: IngestRunStats[]): IngestRunStats {
     out.mdblistHttpErrorCount += stats.mdblistHttpErrorCount;
     out.mdblistNetworkErrorCount += stats.mdblistNetworkErrorCount;
     out.missingImdbIdCount += stats.missingImdbIdCount;
+    out.skippedBecauseAlreadyCompleteCount +=
+      stats.skippedBecauseAlreadyCompleteCount;
+    out.externalIdsFetchCount += stats.externalIdsFetchCount;
+    out.providersFetchCount += stats.providersFetchCount;
   }
 
   return out;
@@ -143,9 +156,13 @@ function normalizeQuotaState(raw: QuotaState | null): QuotaState {
     dayKey: today,
     usedToday: Math.max(0, Number(raw.usedToday ?? 0)),
     providerRemaining:
-      raw.providerRemaining == null ? null : Math.max(0, Number(raw.providerRemaining)),
+      raw.providerRemaining == null
+        ? null
+        : Math.max(0, Number(raw.providerRemaining)),
     retryAfterSeconds:
-      raw.retryAfterSeconds == null ? null : Math.max(0, Number(raw.retryAfterSeconds)),
+      raw.retryAfterSeconds == null
+        ? null
+        : Math.max(0, Number(raw.retryAfterSeconds)),
     providerLimit:
       raw.providerLimit == null ? null : Math.max(0, Number(raw.providerLimit)),
     resetAtUnix:
@@ -229,7 +246,7 @@ function normalizeYear(date?: string | null) {
 
 function toIntVotes(v: any): number | null {
   if (v == null) return null;
-  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "number") return (Number.isFinite(v) ? v : null);
   if (typeof v === "string") {
     const n = parseInt(v.replace(/[^\d]/g, ""), 10);
     return Number.isFinite(n) ? n : null;
@@ -313,17 +330,20 @@ async function tmdbFetch(
 }
 
 async function fetchDiscoverPage(mediaType: CatalogMediaType, page: number) {
+  const safePage = Math.min(Math.max(page, 1), MAX_TMDB_DISCOVER_PAGE);
   const path = mediaType === "movie" ? "discover/movie" : "discover/tv";
 
   const result = await tmdbFetch(path, {
     language: "tr-TR",
     include_adult: "false",
     sort_by: "vote_count.desc",
-    page,
+    page: safePage,
   });
 
   if (!result.ok) {
-    throw new Error(`TMDB discover failed for ${mediaType} page ${page}: ${result.status}`);
+    throw new Error(
+      `TMDB discover failed for ${mediaType} page ${safePage}: ${result.status}`
+    );
   }
 
   return result.json;
@@ -442,6 +462,48 @@ function mapMdblistResultToStatus(result: MdblistResult): MdblistStatus {
   }
 }
 
+function parseProviderIdsJson(value: unknown): number[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x) && x > 0);
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((x) => Number(x))
+          .filter((x) => Number.isFinite(x) && x > 0);
+      }
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+function shouldFetchExternalIds(existing: CatalogItemSnapshot | null) {
+  return !existing?.imdb_id;
+}
+
+function shouldFetchProviders(existing: CatalogItemSnapshot | null) {
+  return existing == null;
+}
+
+function shouldAttemptMdblist(
+  existing: CatalogItemSnapshot | null,
+  imdbId: string | null
+) {
+  if (!imdbId) return false;
+  if (!existing) return true;
+  if (existing.is_enriched) return false;
+  if (existing.mdblist_status === "not_found") return false;
+  return true;
+}
+
 function mapCandidateToCatalogRow(
   candidate: TmdbListItem,
   mediaType: CatalogMediaType,
@@ -492,8 +554,14 @@ async function getNextCursor() {
   )) ?? { moviePage: 1, tvPage: 1 };
 
   return {
-    moviePage: Math.max(1, Number(state.moviePage ?? 1)),
-    tvPage: Math.max(1, Number(state.tvPage ?? 1)),
+    moviePage: Math.min(
+      MAX_TMDB_DISCOVER_PAGE,
+      Math.max(1, Number(state.moviePage ?? 1))
+    ),
+    tvPage: Math.min(
+      MAX_TMDB_DISCOVER_PAGE,
+      Math.max(1, Number(state.tvPage ?? 1))
+    ),
   };
 }
 
@@ -508,18 +576,27 @@ async function ingestMediaType(
   targetItems: number,
   quotaState: QuotaState
 ): Promise<IngestRunResult> {
-  let currentPage = startPage;
-  let lastCompletedPage = startPage;
+  let currentPage = Math.min(
+    MAX_TMDB_DISCOVER_PAGE,
+    Math.max(1, startPage)
+  );
+
   const collected: CatalogItemRow[] = [];
   const stats = emptyStats();
   let stoppedDueToQuota = false;
 
   while (collected.length < targetItems) {
-    const pageBeingProcessed = currentPage;
+    const pageBeingProcessed = Math.min(
+      MAX_TMDB_DISCOVER_PAGE,
+      Math.max(1, currentPage)
+    );
 
     const json = await fetchDiscoverPage(mediaType, pageBeingProcessed);
     const results = Array.isArray(json?.results) ? (json.results as TmdbListItem[]) : [];
-    const totalPages = Number(json?.total_pages ?? 1);
+    const totalPages = Math.min(
+      MAX_TMDB_DISCOVER_PAGE,
+      Math.max(1, Number(json?.total_pages ?? 1))
+    );
 
     let pageCompleted = true;
 
@@ -528,45 +605,71 @@ async function ingestMediaType(
         break;
       }
 
-      const externalIds = await fetchExternalIds(mediaType, candidate.id);
-      const imdbId = typeof externalIds?.imdb_id === "string" ? externalIds.imdb_id : null;
+      const existing = await getCatalogItemSnapshotByTmdbId(mediaType, candidate.id);
+
+      let imdbId = existing?.imdb_id ?? null;
+      let providerIds = existing ? parseProviderIdsJson(existing.provider_ids_json) : [];
+      let mdblistPayload = existing?.mdblist_payload_json ?? null;
+      let mdblistStatus: MdblistStatus =
+        existing?.mdblist_status ?? "network_error";
+
+      let fetchedAnything = false;
+
+      if (shouldFetchExternalIds(existing)) {
+        stats.externalIdsFetchCount += 1;
+        const externalIds = await fetchExternalIds(mediaType, candidate.id);
+        imdbId = typeof externalIds?.imdb_id === "string" ? externalIds.imdb_id : null;
+        fetchedAnything = true;
+      }
 
       if (!imdbId) {
         stats.missingImdbIdCount += 1;
         continue;
       }
 
-      stats.mdblistAttemptCount += 1;
-      const mdblistResult = await fetchMdblistByImdbId(imdbId, quotaState);
+      if (shouldAttemptMdblist(existing, imdbId)) {
+        stats.mdblistAttemptCount += 1;
+        const mdblistResult = await fetchMdblistByImdbId(imdbId, quotaState);
 
-      if (mdblistResult.status === "rate_limited") {
-        stats.mdblistRateLimitedCount += 1;
-        stoppedDueToQuota = true;
-        pageCompleted = false;
-        break;
+        if (mdblistResult.status === "rate_limited") {
+          stats.mdblistRateLimitedCount += 1;
+          stoppedDueToQuota = true;
+          pageCompleted = false;
+          break;
+        }
+
+        if (mdblistResult.status === "quota_blocked") {
+          stats.mdblistQuotaBlockedCount += 1;
+          stoppedDueToQuota = true;
+          pageCompleted = false;
+          break;
+        }
+
+        if (mdblistResult.status === "ok") {
+          mdblistPayload = mdblistResult.data;
+          stats.mdblistSuccessCount += 1;
+        } else if (mdblistResult.status === "not_found") {
+          mdblistPayload = null;
+          stats.mdblistNotFoundCount += 1;
+        } else if (mdblistResult.status === "http_error") {
+          stats.mdblistHttpErrorCount += 1;
+        } else if (mdblistResult.status === "network_error") {
+          stats.mdblistNetworkErrorCount += 1;
+        }
+
+        mdblistStatus = mapMdblistResultToStatus(mdblistResult);
+        fetchedAnything = true;
       }
 
-      if (mdblistResult.status === "quota_blocked") {
-        stats.mdblistQuotaBlockedCount += 1;
-        stoppedDueToQuota = true;
-        pageCompleted = false;
-        break;
+      if (shouldFetchProviders(existing)) {
+        stats.providersFetchCount += 1;
+        providerIds = await fetchProviders(mediaType, candidate.id);
+        fetchedAnything = true;
       }
 
-      let mdblistPayload: any = null;
-
-      if (mdblistResult.status === "ok") {
-        mdblistPayload = mdblistResult.data;
-        stats.mdblistSuccessCount += 1;
-      } else if (mdblistResult.status === "not_found") {
-        stats.mdblistNotFoundCount += 1;
-      } else if (mdblistResult.status === "http_error") {
-        stats.mdblistHttpErrorCount += 1;
-      } else if (mdblistResult.status === "network_error") {
-        stats.mdblistNetworkErrorCount += 1;
+      if (!fetchedAnything && existing) {
+        stats.skippedBecauseAlreadyCompleteCount += 1;
       }
-
-      const providerIds = await fetchProviders(mediaType, candidate.id);
 
       const row = mapCandidateToCatalogRow(
         candidate,
@@ -574,17 +677,18 @@ async function ingestMediaType(
         imdbId,
         mdblistPayload,
         providerIds,
-        mapMdblistResultToStatus(mdblistResult)
+        mdblistStatus
       );
 
       collected.push(row);
     }
 
     if (pageCompleted) {
-      lastCompletedPage = pageBeingProcessed;
-
       currentPage = pageBeingProcessed + 1;
       if (currentPage > totalPages) {
+        currentPage = 1;
+      }
+      if (currentPage > MAX_TMDB_DISCOVER_PAGE) {
         currentPage = 1;
       }
     } else {
