@@ -1,8 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 
-
 const databaseUrl = process.env.DATABASE_URL;
-
 
 if (!databaseUrl) {
   throw new Error("DATABASE_URL missing");
@@ -162,7 +160,7 @@ export async function upsertCatalogItem(row: CatalogItemRow) {
       ${row.imdb_votes},
       ${row.tmdb_vote_average},
       ${row.tmdb_vote_count},
-      ${row.mdblist_payload_json ? `${row.mdblist_payload_json}` : null}::jsonb,
+      ${row.mdblist_payload_json ? row.mdblist_payload_json : null}::jsonb,
       ${row.is_enriched},
       ${row.mdblist_status},
       NOW()
