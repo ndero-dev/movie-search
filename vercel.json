@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/bootstrap-export?batch=500000&secret=nderod_cron",
-      "schedule": "53 18 * * *"
+      "schedule": "53 21 * * *"
     }
   ]
 }
