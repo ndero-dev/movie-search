@@ -1,96 +1,80 @@
 import { neon } from "@neondatabase/serverless";
 
-const databaseUrl = process.env.DATABASE_URL;
+const sql = neon(process.env.DATABASE_URL!);
 
-if (!databaseUrl) {
-  throw new Error("DATABASE_URL missing");
-}
-
-const sql = neon(databaseUrl);
-
-export type CatalogMediaType = "movie" | "tv";
-
-export type MdblistStatus =
-  | "ok"
-  | "not_found"
-  | "rate_limited"
-  | "quota_blocked"
-  | "http_error"
-  | "network_error";
-
-export type CatalogItemRow = {
-  media_type: CatalogMediaType;
+export type CatalogItemInput = {
+  media_type: "movie" | "tv";
   tmdb_id: number;
-  imdb_id: string | null;
-  title: string;
-  original_title: string | null;
-  year: number | null;
-  poster_path: string | null;
-  overview: string | null;
-  genre_ids_json: string;
-  provider_ids_json: string;
-  imdb_rating: number | null;
-  imdb_votes: number | null;
-  tmdb_vote_average: number | null;
-  tmdb_vote_count: number | null;
-  mdblist_payload_json: string | null;
-  is_enriched: boolean;
-  mdblist_status: MdblistStatus;
-};
-
-export type CatalogItemSnapshot = {
-  media_type: CatalogMediaType;
-  tmdb_id: number;
-  imdb_id: string | null;
-  provider_ids_json: unknown;
-  mdblist_payload_json: unknown | null;
-  is_enriched: boolean;
-  mdblist_status: MdblistStatus;
+  imdb_id?: string | null;
+  title?: string | null;
+  original_title?: string | null;
+  year?: number | null;
+  poster_path?: string | null;
+  overview?: string | null;
+  genre_ids_json?: string | null;
+  provider_ids_json?: string | null;
+  imdb_rating?: number | null;
+  imdb_votes?: number | null;
+  metacritic_rating?: number | null;
+  metacritic_votes?: number | null;
+  metacriticuser_rating?: number | null;
+  metacriticuser_votes?: number | null;
+  trakt_rating?: number | null;
+  trakt_votes?: number | null;
+  tomatoesaudience_rating?: number | null;
+  tomatoesaudience_votes?: number | null;
+  letterboxd_rating?: number | null;
+  letterboxd_votes?: number | null;
+  tmdb_vote_average?: number | null;
+  tmdb_vote_count?: number | null;
+  is_enriched?: boolean | null;
+  mdblist_status?: string | null;
 };
 
 export async function ensureCatalogSchema() {
   await sql`
     CREATE TABLE IF NOT EXISTS catalog_items (
       id BIGSERIAL PRIMARY KEY,
-      media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+      media_type TEXT NOT NULL,
       tmdb_id BIGINT NOT NULL,
       imdb_id TEXT,
-      title TEXT NOT NULL,
+      title TEXT,
       original_title TEXT,
       year INTEGER,
       poster_path TEXT,
       overview TEXT,
-      genre_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-      provider_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      genre_ids_json JSONB,
+      provider_ids_json JSONB,
       imdb_rating DOUBLE PRECISION,
       imdb_votes BIGINT,
+      metacritic_rating DOUBLE PRECISION,
+      metacritic_votes BIGINT,
+      metacriticuser_rating DOUBLE PRECISION,
+      metacriticuser_votes BIGINT,
+      trakt_rating DOUBLE PRECISION,
+      trakt_votes BIGINT,
+      tomatoesaudience_rating DOUBLE PRECISION,
+      tomatoesaudience_votes BIGINT,
+      letterboxd_rating DOUBLE PRECISION,
+      letterboxd_votes BIGINT,
       tmdb_vote_average DOUBLE PRECISION,
       tmdb_vote_count BIGINT,
-      mdblist_payload_json JSONB,
-      is_enriched BOOLEAN NOT NULL DEFAULT FALSE,
-      mdblist_status TEXT NOT NULL DEFAULT 'network_error',
+      is_enriched BOOLEAN DEFAULT FALSE,
+      mdblist_status TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (media_type, tmdb_id)
+      CONSTRAINT catalog_items_media_type_tmdb_id_key UNIQUE (media_type, tmdb_id)
     )
   `;
 
   await sql`
-    CREATE TABLE IF NOT EXISTS ingest_state (
-      key TEXT PRIMARY KEY,
-      value_json JSONB NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
+    CREATE INDEX IF NOT EXISTS idx_catalog_items_media_type
+    ON catalog_items (media_type)
   `;
 
   await sql`
-    CREATE INDEX IF NOT EXISTS idx_catalog_items_imdb_rating_votes
-    ON catalog_items (imdb_rating DESC, imdb_votes DESC)
-  `;
-
-  await sql`
-    CREATE INDEX IF NOT EXISTS idx_catalog_items_year
-    ON catalog_items (year DESC)
+    CREATE INDEX IF NOT EXISTS idx_catalog_items_tmdb_id
+    ON catalog_items (tmdb_id)
   `;
 
   await sql`
@@ -99,63 +83,72 @@ export async function ensureCatalogSchema() {
   `;
 
   await sql`
+    CREATE INDEX IF NOT EXISTS idx_catalog_items_year
+    ON catalog_items (year)
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_catalog_items_imdb_rating
+    ON catalog_items (imdb_rating DESC)
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_catalog_items_tmdb_vote_average
+    ON catalog_items (tmdb_vote_average DESC)
+  `;
+
+  await sql`
     CREATE INDEX IF NOT EXISTS idx_catalog_items_is_enriched
     ON catalog_items (is_enriched)
   `;
 
   await sql`
-    CREATE INDEX IF NOT EXISTS idx_catalog_items_mdblist_status
-    ON catalog_items (mdblist_status)
+    CREATE TABLE IF NOT EXISTS ingest_state (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
   `;
 }
 
-export async function getIngestState<T = unknown>(key: string): Promise<T | null> {
+export async function getIngestState(key: string) {
   const rows = await sql`
-    SELECT value_json
+    SELECT value
     FROM ingest_state
     WHERE key = ${key}
     LIMIT 1
   `;
 
-  return (rows as Array<{ value_json: T }>)[0]?.value_json ?? null;
+  return rows[0]?.value ?? null;
 }
 
 export async function setIngestState(key: string, value: unknown) {
-  const valueJson = JSON.stringify(value);
-
   await sql`
-    INSERT INTO ingest_state (key, value_json, updated_at)
-    VALUES (${key}, ${valueJson}::jsonb, NOW())
+    INSERT INTO ingest_state (key, value, updated_at)
+    VALUES (${key}, ${JSON.stringify(value)}::jsonb, NOW())
     ON CONFLICT (key)
     DO UPDATE SET
-      value_json = EXCLUDED.value_json,
+      value = EXCLUDED.value,
       updated_at = NOW()
   `;
 }
 
-export async function getCatalogItemSnapshotByTmdbId(
-  mediaType: CatalogMediaType,
-  tmdbId: number
-): Promise<CatalogItemSnapshot | null> {
+export async function catalogItemExists(
+  tmdbId: number,
+  mediaType: "movie" | "tv" = "movie"
+) {
   const rows = await sql`
-    SELECT
-      media_type,
-      tmdb_id,
-      imdb_id,
-      provider_ids_json,
-      mdblist_payload_json,
-      is_enriched,
-      mdblist_status
+    SELECT 1
     FROM catalog_items
-    WHERE media_type = ${mediaType}
-      AND tmdb_id = ${tmdbId}
+    WHERE tmdb_id = ${tmdbId}
+      AND media_type = ${mediaType}
     LIMIT 1
   `;
 
-  return (rows as Array<CatalogItemSnapshot>)[0] ?? null;
+  return rows.length > 0;
 }
 
-export async function upsertCatalogItem(row: CatalogItemRow) {
+export async function upsertCatalogItem(input: CatalogItemInput) {
   await sql`
     INSERT INTO catalog_items (
       media_type,
@@ -170,36 +163,54 @@ export async function upsertCatalogItem(row: CatalogItemRow) {
       provider_ids_json,
       imdb_rating,
       imdb_votes,
+      metacritic_rating,
+      metacritic_votes,
+      metacriticuser_rating,
+      metacriticuser_votes,
+      trakt_rating,
+      trakt_votes,
+      tomatoesaudience_rating,
+      tomatoesaudience_votes,
+      letterboxd_rating,
+      letterboxd_votes,
       tmdb_vote_average,
       tmdb_vote_count,
-      mdblist_payload_json,
       is_enriched,
       mdblist_status,
       updated_at
     )
     VALUES (
-      ${row.media_type},
-      ${row.tmdb_id},
-      ${row.imdb_id},
-      ${row.title},
-      ${row.original_title},
-      ${row.year},
-      ${row.poster_path},
-      ${row.overview},
-      ${row.genre_ids_json}::jsonb,
-      ${row.provider_ids_json}::jsonb,
-      ${row.imdb_rating},
-      ${row.imdb_votes},
-      ${row.tmdb_vote_average},
-      ${row.tmdb_vote_count},
-      ${row.mdblist_payload_json ? row.mdblist_payload_json : null}::jsonb,
-      ${row.is_enriched},
-      ${row.mdblist_status},
+      ${input.media_type},
+      ${input.tmdb_id},
+      ${input.imdb_id ?? null},
+      ${input.title ?? null},
+      ${input.original_title ?? null},
+      ${input.year ?? null},
+      ${input.poster_path ?? null},
+      ${input.overview ?? null},
+      ${input.genre_ids_json ?? null}::jsonb,
+      ${input.provider_ids_json ?? null}::jsonb,
+      ${input.imdb_rating ?? null},
+      ${input.imdb_votes ?? null},
+      ${input.metacritic_rating ?? null},
+      ${input.metacritic_votes ?? null},
+      ${input.metacriticuser_rating ?? null},
+      ${input.metacriticuser_votes ?? null},
+      ${input.trakt_rating ?? null},
+      ${input.trakt_votes ?? null},
+      ${input.tomatoesaudience_rating ?? null},
+      ${input.tomatoesaudience_votes ?? null},
+      ${input.letterboxd_rating ?? null},
+      ${input.letterboxd_votes ?? null},
+      ${input.tmdb_vote_average ?? null},
+      ${input.tmdb_vote_count ?? null},
+      ${input.is_enriched ?? null},
+      ${input.mdblist_status ?? null},
       NOW()
     )
     ON CONFLICT (media_type, tmdb_id)
     DO UPDATE SET
-      imdb_id = COALESCE(EXCLUDED.imdb_id, catalog_items.imdb_id),
+      imdb_id = EXCLUDED.imdb_id,
       title = EXCLUDED.title,
       original_title = EXCLUDED.original_title,
       year = EXCLUDED.year,
@@ -207,57 +218,22 @@ export async function upsertCatalogItem(row: CatalogItemRow) {
       overview = EXCLUDED.overview,
       genre_ids_json = EXCLUDED.genre_ids_json,
       provider_ids_json = EXCLUDED.provider_ids_json,
-
-      imdb_rating = CASE
-        WHEN EXCLUDED.is_enriched THEN EXCLUDED.imdb_rating
-        ELSE catalog_items.imdb_rating
-      END,
-
-      imdb_votes = CASE
-        WHEN EXCLUDED.is_enriched THEN EXCLUDED.imdb_votes
-        ELSE catalog_items.imdb_votes
-      END,
-
+      imdb_rating = EXCLUDED.imdb_rating,
+      imdb_votes = EXCLUDED.imdb_votes,
+      metacritic_rating = EXCLUDED.metacritic_rating,
+      metacritic_votes = EXCLUDED.metacritic_votes,
+      metacriticuser_rating = EXCLUDED.metacriticuser_rating,
+      metacriticuser_votes = EXCLUDED.metacriticuser_votes,
+      trakt_rating = EXCLUDED.trakt_rating,
+      trakt_votes = EXCLUDED.trakt_votes,
+      tomatoesaudience_rating = EXCLUDED.tomatoesaudience_rating,
+      tomatoesaudience_votes = EXCLUDED.tomatoesaudience_votes,
+      letterboxd_rating = EXCLUDED.letterboxd_rating,
+      letterboxd_votes = EXCLUDED.letterboxd_votes,
       tmdb_vote_average = EXCLUDED.tmdb_vote_average,
       tmdb_vote_count = EXCLUDED.tmdb_vote_count,
-
-      mdblist_payload_json = CASE
-        WHEN EXCLUDED.is_enriched THEN EXCLUDED.mdblist_payload_json
-        ELSE catalog_items.mdblist_payload_json
-      END,
-
-      is_enriched = CASE
-        WHEN EXCLUDED.is_enriched THEN TRUE
-        ELSE catalog_items.is_enriched
-      END,
-
-      mdblist_status = CASE
-        WHEN EXCLUDED.is_enriched THEN EXCLUDED.mdblist_status
-        WHEN catalog_items.is_enriched THEN catalog_items.mdblist_status
-        ELSE EXCLUDED.mdblist_status
-      END,
-
+      is_enriched = EXCLUDED.is_enriched,
+      mdblist_status = EXCLUDED.mdblist_status,
       updated_at = NOW()
   `;
-}
-
-export async function catalogItemExists(tmdbId: number, mediaType: "movie" | "tv" = "movie") {
-  const rows = await sql`
-    SELECT 1
-    FROM catalog_items
-    WHERE tmdb_id = ${tmdbId}
-      AND media_type = ${mediaType}
-    LIMIT 1
-  `;
-
-  return rows.length > 0;
-}
-
-export async function countCatalogItems() {
-  const rows = await sql`
-    SELECT COUNT(*)::text AS count
-    FROM catalog_items
-  `;
-
-  return Number((rows as Array<{ count: string }>)[0]?.count ?? "0");
 }

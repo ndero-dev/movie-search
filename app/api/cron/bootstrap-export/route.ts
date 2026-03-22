@@ -15,7 +15,15 @@ export const dynamic = "force-dynamic";
 
 const STATE_KEY = "tmdb_export_bootstrap_v1";
 const DEFAULT_BATCH_SIZE = 1000;
-const WATCH_REGION = "TR";
+
+type BootstrapState = {
+  exportDate: string;
+  movieOffset: number;
+  initializedAt: string;
+  stoppedAtTmdbId?: number;
+  stoppedReason?: string;
+  stoppedAt?: string;
+};
 
 function isAuthorized(req: Request) {
   const authHeader = req.headers.get("authorization");
@@ -24,11 +32,11 @@ function isAuthorized(req: Request) {
   return false;
 }
 
-async function loadState() {
-  const saved = await getIngestState(STATE_KEY);
-  if (saved) return saved;
+async function loadState(): Promise<BootstrapState> {
+  const saved = (await getIngestState(STATE_KEY)) as BootstrapState | null;
+  if (saved && typeof saved.movieOffset === "number") return saved;
 
-  const initial = {
+  const initial: BootstrapState = {
     exportDate: "03_19_2026",
     movieOffset: 0,
     initializedAt: new Date().toISOString(),
@@ -179,20 +187,34 @@ function toNullableInt(value: any): number | null {
   return null;
 }
 
-function extractImdbMetrics(mdblist: any) {
-  if (!mdblist) {
-    return {
-      imdbRating: null,
-      imdbVotes: null,
-    };
-  }
+function findRatingNode(mdblist: any, aliases: string[]) {
+  if (!mdblist) return null;
 
   const ratings = Array.isArray(mdblist?.ratings) ? mdblist.ratings : [];
+  const loweredAliases = aliases.map((x) => x.toLowerCase());
 
-  const imdbNode =
-    ratings.find(
-      (r: any) => String(r?.source ?? r?.name ?? "").toLowerCase() === "imdb"
-    ) ?? null;
+  return (
+    ratings.find((r: any) =>
+      loweredAliases.includes(
+        String(r?.source ?? r?.name ?? "").toLowerCase()
+      )
+    ) ?? null
+  );
+}
+
+function extractRatingFromNode(node: any) {
+  return {
+    rating:
+      toNullableNumber(node?.value) ??
+      toNullableNumber(node?.rating) ??
+      toNullableNumber(node?.score) ??
+      null,
+    votes: toNullableInt(node?.votes) ?? null,
+  };
+}
+
+function extractImdbMetrics(mdblist: any) {
+  const imdbNode = findRatingNode(mdblist, ["imdb"]);
 
   return {
     imdbRating:
@@ -208,6 +230,36 @@ function extractImdbMetrics(mdblist: any) {
       toNullableInt(mdblist?.imdbVotes) ??
       toNullableInt(imdbNode?.votes) ??
       null,
+  };
+}
+
+function extractMdblistRatings(mdblist: any) {
+  const metacritic = extractRatingFromNode(findRatingNode(mdblist, ["metacritic"]));
+  const metacriticuser = extractRatingFromNode(
+    findRatingNode(mdblist, ["metacriticuser", "metacritic_user"])
+  );
+  const trakt = extractRatingFromNode(findRatingNode(mdblist, ["trakt"]));
+  const tomatoesaudience = extractRatingFromNode(
+    findRatingNode(mdblist, [
+      "tomatoesaudience",
+      "tomatoes_audience",
+      "rottentomatoesaudience",
+      "rottentomatoes_audience",
+    ])
+  );
+  const letterboxd = extractRatingFromNode(findRatingNode(mdblist, ["letterboxd"]));
+
+  return {
+    metacriticRating: metacritic.rating,
+    metacriticVotes: metacritic.votes,
+    metacriticuserRating: metacriticuser.rating,
+    metacriticuserVotes: metacriticuser.votes,
+    traktRating: trakt.rating,
+    traktVotes: trakt.votes,
+    tomatoesaudienceRating: tomatoesaudience.rating,
+    tomatoesaudienceVotes: tomatoesaudience.votes,
+    letterboxdRating: letterboxd.rating,
+    letterboxdVotes: letterboxd.votes,
   };
 }
 
@@ -235,11 +287,11 @@ export async function GET(req: Request) {
     let skipped = 0;
     let filtered = 0;
     let handledRows = 0;
+    let mdblistCalls = 0;
 
     for (const r of rows) {
       const id = r.id;
 
-      /* EXISTS CHECK -> catalog_items */
       const exists = await catalogItemExists(id, "movie");
       if (exists) {
         skipped++;
@@ -247,33 +299,35 @@ export async function GET(req: Request) {
         continue;
       }
 
-      /* TMDB DETAIL */
       const detail = await fetchDetail(id);
       if (!detail) {
         handledRows++;
         continue;
       }
 
-      /* QUALITY FILTER */
       const voteAverage = Number(detail.vote_average ?? 0);
       const voteCount = Number(detail.vote_count ?? 0);
 
-      if (!(voteAverage >= 5 && voteCount >= 25)) {
+      if (!(voteAverage >= 5 && voteCount >= 100)) {
         filtered++;
         handledRows++;
         continue;
       }
 
-      const ext = await fetchExternalIds(id);
+      const [ext, providers] = await Promise.all([
+        fetchExternalIds(id),
+        fetchProviders(id),
+      ]);
+
       const imdbId = ext?.imdb_id;
 
-      /* MDBLIST */
       let mdblist = null;
       if (imdbId) {
+        mdblistCalls++;
         const m = await fetchMdblist(imdbId);
 
         if (m.status === "limit_reached") {
-          const nextState = {
+          const nextState: BootstrapState = {
             ...state,
             movieOffset: state.movieOffset + handledRows,
             stoppedAtTmdbId: id,
@@ -291,6 +345,7 @@ export async function GET(req: Request) {
             inserted,
             skipped,
             filtered,
+            mdblistCalls,
             nextOffset: nextState.movieOffset,
             stoppedAtTmdbId: id,
           });
@@ -301,10 +356,20 @@ export async function GET(req: Request) {
         }
       }
 
-      const providers = await fetchProviders(id);
       const { imdbRating, imdbVotes } = extractImdbMetrics(mdblist);
+      const {
+        metacriticRating,
+        metacriticVotes,
+        metacriticuserRating,
+        metacriticuserVotes,
+        traktRating,
+        traktVotes,
+        tomatoesaudienceRating,
+        tomatoesaudienceVotes,
+        letterboxdRating,
+        letterboxdVotes,
+      } = extractMdblistRatings(mdblist);
 
-      /* UPSERT */
       await upsertCatalogItem({
         media_type: "movie",
         tmdb_id: id,
@@ -318,9 +383,18 @@ export async function GET(req: Request) {
         provider_ids_json: JSON.stringify(providers),
         imdb_rating: imdbRating,
         imdb_votes: imdbVotes,
+        metacritic_rating: metacriticRating,
+        metacritic_votes: metacriticVotes,
+        metacriticuser_rating: metacriticuserRating,
+        metacriticuser_votes: metacriticuserVotes,
+        trakt_rating: traktRating,
+        trakt_votes: traktVotes,
+        tomatoesaudience_rating: tomatoesaudienceRating,
+        tomatoesaudience_votes: tomatoesaudienceVotes,
+        letterboxd_rating: letterboxdRating,
+        letterboxd_votes: letterboxdVotes,
         tmdb_vote_average: detail.vote_average,
         tmdb_vote_count: detail.vote_count,
-        mdblist_payload_json: mdblist ? JSON.stringify(mdblist) : null,
         is_enriched: !!mdblist,
         mdblist_status: mdblist ? "ok" : "not_found",
       });
@@ -330,7 +404,7 @@ export async function GET(req: Request) {
       handledRows++;
     }
 
-    const nextState = {
+    const nextState: BootstrapState = {
       ...state,
       movieOffset: state.movieOffset + handledRows,
     };
@@ -343,6 +417,7 @@ export async function GET(req: Request) {
       inserted,
       skipped,
       filtered,
+      mdblistCalls,
       nextOffset: nextState.movieOffset,
     });
   } catch (e: any) {
