@@ -6,10 +6,10 @@ echo ============================
 echo %date% %time% - Ingest started
 echo ============================
 
-curl -H "Authorization: Bearer nderod_cron" http://localhost:3000/api/cron/ingest
+curl -H "Authorization: Bearer nderod_cron" http://localhost:3000/api/cron/bootstrap-export?batch=2000
 
 echo.
-echo Waiting 2 minutes...
+echo Waiting 1 minutes...
 timeout /t 60 /nobreak >nul
 
 goto loop

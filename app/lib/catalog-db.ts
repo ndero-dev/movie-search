@@ -241,6 +241,18 @@ export async function upsertCatalogItem(row: CatalogItemRow) {
   `;
 }
 
+export async function catalogItemExists(tmdbId: number, mediaType: "movie" | "tv" = "movie") {
+  const rows = await sql`
+    SELECT 1
+    FROM catalog_items
+    WHERE tmdb_id = ${tmdbId}
+      AND media_type = ${mediaType}
+    LIMIT 1
+  `;
+
+  return rows.length > 0;
+}
+
 export async function countCatalogItems() {
   const rows = await sql`
     SELECT COUNT(*)::text AS count
