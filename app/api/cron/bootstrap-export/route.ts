@@ -26,9 +26,17 @@ type BootstrapState = {
 };
 
 function isAuthorized(req: Request) {
-  const authHeader = req.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && authHeader === `Bearer ${cronSecret}`) return true;
+  if (!cronSecret) return false;
+
+  const authHeader = req.headers.get("authorization");
+  if (authHeader === `Bearer ${cronSecret}`) return true;
+
+  const url = new URL(req.url);
+  const secret = url.searchParams.get("secret");
+
+  if (secret === cronSecret) return true;
+
   return false;
 }
 
@@ -288,9 +296,17 @@ export async function GET(req: Request) {
     let filtered = 0;
     let handledRows = 0;
     let mdblistCalls = 0;
+    
+    let debugCounter = 0;
 
     for (const r of rows) {
       const id = r.id;
+      debugCounter++;
+      if (debugCounter % 100 === 0) {
+    console.log(
+      `[INGEST] processed ${debugCounter} items in this batch | current tmdb_id=${id} | offset=${state.movieOffset + handledRows}`
+    );
+  }
 
       const exists = await catalogItemExists(id, "movie");
       if (exists) {
@@ -308,7 +324,7 @@ export async function GET(req: Request) {
       const voteAverage = Number(detail.vote_average ?? 0);
       const voteCount = Number(detail.vote_count ?? 0);
 
-      if (!(voteAverage >= 5 && voteCount >= 100)) {
+      if (!(voteAverage >= 5.5 && voteCount >= 40)) {
         filtered++;
         handledRows++;
         continue;

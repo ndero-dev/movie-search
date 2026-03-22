@@ -105,30 +105,40 @@ export async function ensureCatalogSchema() {
   await sql`
     CREATE TABLE IF NOT EXISTS ingest_state (
       key TEXT PRIMARY KEY,
-      value JSONB NOT NULL,
+      value_json JSONB,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `;
+
+  await sql`
+    ALTER TABLE ingest_state
+    ADD COLUMN IF NOT EXISTS value_json JSONB
+  `;
+
+  await sql`
+    ALTER TABLE ingest_state
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   `;
 }
 
 export async function getIngestState(key: string) {
   const rows = await sql`
-    SELECT value
+    SELECT value_json
     FROM ingest_state
     WHERE key = ${key}
     LIMIT 1
   `;
 
-  return rows[0]?.value ?? null;
+  return rows[0]?.value_json ?? null;
 }
 
 export async function setIngestState(key: string, value: unknown) {
   await sql`
-    INSERT INTO ingest_state (key, value, updated_at)
+    INSERT INTO ingest_state (key, value_json, updated_at)
     VALUES (${key}, ${JSON.stringify(value)}::jsonb, NOW())
     ON CONFLICT (key)
     DO UPDATE SET
-      value = EXCLUDED.value,
+      value_json = ${JSON.stringify(value)}::jsonb,
       updated_at = NOW()
   `;
 }
