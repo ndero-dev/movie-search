@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
+import {
+  getCachedExtraRatings,
+  type MediaType,
+} from "@/app/lib/detail-cache";
 
-type MediaType = "movie" | "tv";
 type AnyObj = Record<string, any>;
 
 type Item = {
@@ -35,7 +38,13 @@ type EnrichedItem = Item & {
   imdbVotes: number | null;
   sources?: EnrichedSources;
   turkceAltyaziUrl?: string | null;
-  mdblist?: null;
+  mdblist?:
+    | {
+        id: string | number;
+        type: "movie" | "show";
+        url: string | null;
+      }
+    | null;
   ratingSource?: "imdb" | "tmdb" | null;
 };
 
@@ -66,11 +75,16 @@ function formatYearFromDate(d?: string | null) {
 
 function toIntVotes(v: any): number | null {
   if (v == null) return null;
-  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+
+  if (typeof v === "number") {
+    return Number.isFinite(v) ? v : null;
+  }
+
   if (typeof v === "string") {
     const n = parseInt(v.replace(/[^\d]/g, ""), 10);
     return Number.isFinite(n) ? n : null;
   }
+
   return null;
 }
 
@@ -80,17 +94,12 @@ function toNumberRating(v: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function turkceAltyaziUrlFromImdb(imdbId: string) {
-  const num = imdbId.replace(/^tt/i, "");
-  if (!num) return null;
-  return `https://turkcealtyazi.org/mov/${num}/`;
-}
-
 async function tmdbFetch(path: string, qs?: Record<string, any>) {
   const token = process.env.TMDB_BEARER_TOKEN;
   if (!token) throw new Error("TMDB_BEARER_TOKEN missing");
 
   const search = new URLSearchParams();
+
   if (qs) {
     for (const [k, v] of Object.entries(qs)) {
       if (v === undefined || v === null || v === "") continue;
@@ -126,8 +135,6 @@ async function safeDiscover(
 
   if (result.ok) return result;
 
-  // Provider seçiliyse bazı provider ID'leri movie veya tv tarafının birinde 400 dönebiliyor.
-  // Bu durumda ilgili tarafı boş sonuç kabul edip diğer tarafla devam ediyoruz.
   if (providerSelected && result.status === 400) {
     return {
       ok: true,
@@ -151,12 +158,10 @@ function normalizeResults(arr: any[], forcedType?: MediaType): Item[] {
     )
     .map((x) => {
       const mt: MediaType = forcedType ?? x.media_type;
-
       const title =
         mt === "tv"
-          ? (x?.name ?? x?.original_name ?? "")
-          : (x?.title ?? x?.original_title ?? "");
-
+          ? x?.name ?? x?.original_name ?? ""
+          : x?.title ?? x?.original_title ?? "";
       const date = mt === "tv" ? x?.first_air_date : x?.release_date;
 
       return {
@@ -177,6 +182,7 @@ function normalizeResults(arr: any[], forcedType?: MediaType): Item[] {
     .filter((x) => x.id && x.title)
     .sort((a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1));
 }
+
 function applyBaseFilters(
   list: Item[],
   type: "all" | MediaType,
@@ -204,7 +210,7 @@ function applyBaseFilters(
   });
 }
 
-function dedupeItems<T extends { media_type: MediaType; id: number }>(list: T[]) {
+function dedupeItems<T extends { id: number; media_type: MediaType }>(list: T[]) {
   const seen = new Set<string>();
   const out: T[] = [];
 
@@ -218,78 +224,15 @@ function dedupeItems<T extends { media_type: MediaType; id: number }>(list: T[])
   return out;
 }
 
-function extractImdbMetrics(md: AnyObj | null) {
-  if (!md) {
-    return {
-      imdbRating: null,
-      imdbVotes: null,
-    };
-  }
+function extractMetric(
+  source: { rating?: number | string | null; votes?: number | null } | null | undefined
+): RatingMetric | undefined {
+  if (!source) return undefined;
 
-  const imdbSource = md?.ratings?.find?.((r: AnyObj) => r?.source === "imdb") ?? null;
-
-  const imdbRating =
-    toNumberRating(imdbSource?.value) ??
-    toNumberRating(md?.scores?.imdb) ??
-    toNumberRating(md?.imdb_rating) ??
-    toNumberRating(md?.imdbRating) ??
-    null;
-
-  const imdbVotes =
-    toIntVotes(imdbSource?.votes) ??
-    toIntVotes(md?.score_average_votes?.imdb) ??
-    toIntVotes(md?.imdb_votes) ??
-    toIntVotes(md?.imdbVotes) ??
-    null;
-
-  return { imdbRating, imdbVotes };
-}
-
-function extractSources(md: AnyObj | null): EnrichedSources {
-  const out: EnrichedSources = {};
-  const ratings = Array.isArray(md?.ratings) ? md.ratings : [];
-
-  for (const r of ratings) {
-    const source = String(r?.source ?? "").toLowerCase();
-    const metric: RatingMetric = {
-      rating: toNumberRating(r?.value),
-      votes: toIntVotes(r?.votes),
-    };
-
-    if (source === "trakt") {
-      out.trakt = metric;
-      continue;
-    }
-
-    if (source === "tomatoes") {
-      out.tomatoes = metric;
-      continue;
-    }
-
-    if (source === "tomatoesaudience") {
-      out.popcorn = metric;
-      continue;
-    }
-
-    if (source === "metacritic") {
-      out.metacritic = metric;
-      continue;
-    }
-  }
-
-  return out;
-}
-
-function isMdblistQuotaPayload(md: AnyObj | null) {
-  if (!md) return false;
-  const text = JSON.stringify(md).toLowerCase();
-
-  return (
-    text.includes("daily limit") ||
-    text.includes("quota") ||
-    text.includes("rate limit") ||
-    text.includes("limit exceeded")
-  );
+  return {
+    rating: toNumberRating(source.rating),
+    votes: toIntVotes(source.votes),
+  };
 }
 
 function getEffectiveRating(item: EnrichedItem) {
@@ -307,21 +250,9 @@ function getRatingSource(item: EnrichedItem): "imdb" | "tmdb" | null {
 }
 
 const g = globalThis as any;
-const ENRICH_CACHE: Map<
-  string,
-  {
-    exp: number;
-    value: Omit<EnrichedItem, keyof Item>;
-  }
-> = g.__SEARCH_ENRICH_CACHE__ ?? (g.__SEARCH_ENRICH_CACHE__ = new Map());
 
-const PROVIDER_CACHE: Map<
-  string,
-  {
-    exp: number;
-    providerIds: number[];
-  }
-> = g.__SEARCH_PROVIDER_CACHE__ ?? (g.__SEARCH_PROVIDER_CACHE__ = new Map());
+const PROVIDER_CACHE: Map<string, { exp: number; providerIds: number[] }> =
+  g.__SEARCH_PROVIDER_CACHE__ ?? (g.__SEARCH_PROVIDER_CACHE__ = new Map());
 
 async function getProviderIds(item: Item): Promise<number[]> {
   const cacheKey = `${item.media_type}:${item.id}:${WATCH_REGION}`;
@@ -346,6 +277,7 @@ async function getProviderIds(item: Item): Promise<number[]> {
 
     const json = (await res.json()) as AnyObj;
     const regionData = json?.results?.[WATCH_REGION] ?? null;
+
     const providers = [
       ...(Array.isArray(regionData?.flatrate) ? regionData.flatrate : []),
       ...(Array.isArray(regionData?.ads) ? regionData.ads : []),
@@ -374,107 +306,27 @@ async function getProviderIds(item: Item): Promise<number[]> {
 }
 
 async function enrichOne(item: Item): Promise<EnrichedItem> {
-  const cacheKey = `${item.media_type}:${item.id}`;
-  const now = Date.now();
-  const cached = ENRICH_CACHE.get(cacheKey);
+  const extra = await getCachedExtraRatings(
+    item.media_type,
+    String(item.id),
+    item.title
+  );
 
-  if (cached && cached.exp > now) {
-    return { ...item, ...cached.value };
-  }
-
-  const TMDB_TOKEN = process.env.TMDB_BEARER_TOKEN;
-
-  if (!TMDB_TOKEN) {
-    return {
-      ...item,
-      imdbRating: null,
-      imdbVotes: null,
-      sources: {},
-      turkceAltyaziUrl: null,
-      mdblist: null,
-      ratingSource: getRatingSource({
-        ...item,
-        imdbRating: null,
-        imdbVotes: null,
-      } as EnrichedItem),
-    };
-  }
-
-  let imdb_id: string | null = null;
-
-  try {
-    const extUrl = `${TMDB_BASE}/${item.media_type}/${item.id}/external_ids`;
-    const extRes = await fetch(extUrl, {
-      headers: { Authorization: `Bearer ${TMDB_TOKEN}` },
-      next: { revalidate: 86400 },
-    });
-
-    if (extRes.ok) {
-      const ext = (await extRes.json()) as AnyObj;
-      imdb_id = (ext?.imdb_id as string | null) ?? null;
-    }
-  } catch {
-    // ignore
-  }
-
-  if (!imdb_id) {
-    const payload = {
-      imdbRating: null,
-      imdbVotes: null,
-      sources: {},
-      turkceAltyaziUrl: null,
-      mdblist: null,
-      ratingSource: "tmdb" as const,
-    };
-
-    ENRICH_CACHE.set(cacheKey, {
-      exp: now + 24 * 3600_000,
-      value: payload,
-    });
-
-    return { ...item, ...payload };
-  }
-
-  let md: AnyObj | null = null;
-  const MDB_KEY = process.env.MDBLIST_API_KEY;
-
-  if (MDB_KEY) {
-    try {
-      const mdUrl = `https://mdblist.com/api/?apikey=${encodeURIComponent(MDB_KEY)}&i=${encodeURIComponent(imdb_id)}`;
-      const mdRes = await fetch(mdUrl, {
-        next: { revalidate: 86400 },
-      });
-
-      if (mdRes.ok) {
-        md = (await mdRes.json()) as AnyObj;
-        if (isMdblistQuotaPayload(md)) {
-          md = null;
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  const { imdbRating, imdbVotes } = extractImdbMetrics(md);
-  const sources = extractSources(md);
-
-  const payload = {
-    imdbRating,
-    imdbVotes,
-    sources,
-    turkceAltyaziUrl: turkceAltyaziUrlFromImdb(imdb_id),
-    mdblist: null,
+  return {
+    ...item,
+    imdbRating: extra.imdbRating,
+    imdbVotes: extra.imdbVotes,
+    sources: {
+      trakt: extractMetric(extra.sources?.trakt),
+      tomatoes: extractMetric(extra.sources?.tomatoes),
+      popcorn: extractMetric(extra.sources?.popcorn),
+      metacritic: extractMetric(extra.sources?.metacritic),
+    },
+    turkceAltyaziUrl: extra.turkceAltyaziUrl,
+    mdblist: extra.mdblist,
     ratingSource:
-      imdbRating != null || imdbVotes != null ? ("imdb" as const) : ("tmdb" as const),
+      extra.imdbRating != null || extra.imdbVotes != null ? "imdb" : "tmdb",
   };
-
-  ENRICH_CACHE.set(cacheKey, {
-    exp: now + 24 * 3600_000,
-    value: payload,
-  });
-
-  return { ...item, ...payload };
 }
 
 export async function GET(req: Request) {
@@ -494,6 +346,7 @@ export async function GET(req: Request) {
     const minRRaw = parseNumber(minRating, null);
     const minVRaw = parseNumber(minVotes, null);
     const selectedProviderId = parseNumber(platform, null);
+
     const minR = minRRaw != null ? clamp(minRRaw, 0, 10) : null;
     const minV = minVRaw != null ? Math.max(0, minVRaw) : null;
     const providerSelected = selectedProviderId != null;
@@ -520,7 +373,11 @@ export async function GET(req: Request) {
 
         if (!data.ok) {
           return NextResponse.json(
-            { error: "tmdb search failed", status: data.status, body: data.json },
+            {
+              error: "tmdb search failed",
+              status: data.status,
+              body: data.json,
+            },
             { status: 502 }
           );
         }
@@ -556,46 +413,50 @@ export async function GET(req: Request) {
           with_watch_providers: providerSelected ? selectedProviderId : undefined,
         };
 
-       const minDate = year ? `${year}-01-01` : undefined;
+        const minDate = year ? `${year}-01-01` : undefined;
 
-const [m, t] = await Promise.all([
-  wantMovie
-    ? safeDiscover(
-        "movie",
-        {
-          ...common,
-          sort_by: "vote_count.desc",
-          "primary_release_date.gte": minDate,
-          with_genres: genreMovie || undefined,
-        },
-        providerSelected
-      )
-    : Promise.resolve({
-        ok: true,
-        status: 200,
-        json: { results: [], total_pages: 0, total_results: 0 },
-      }),
-  wantTv
-    ? safeDiscover(
-        "tv",
-        {
-          ...common,
-          sort_by: "vote_count.desc",
-          "first_air_date.gte": minDate,
-          with_genres: genreTv || undefined,
-        },
-        providerSelected
-      )
-    : Promise.resolve({
-        ok: true,
-        status: 200,
-        json: { results: [], total_pages: 0, total_results: 0 },
-      }),
-]);
+        const [m, t] = await Promise.all([
+          wantMovie
+            ? safeDiscover(
+                "movie",
+                {
+                  ...common,
+                  sort_by: "vote_count.desc",
+                  "primary_release_date.gte": minDate,
+                  with_genres: genreMovie || undefined,
+                },
+                providerSelected
+              )
+            : Promise.resolve({
+                ok: true,
+                status: 200,
+                json: { results: [], total_pages: 0, total_results: 0 },
+              }),
+          wantTv
+            ? safeDiscover(
+                "tv",
+                {
+                  ...common,
+                  sort_by: "vote_count.desc",
+                  "first_air_date.gte": minDate,
+                  with_genres: genreTv || undefined,
+                },
+                providerSelected
+              )
+            : Promise.resolve({
+                ok: true,
+                status: 200,
+                json: { results: [], total_pages: 0, total_results: 0 },
+              }),
+        ]);
 
         if (!m.ok || !t.ok) {
           return NextResponse.json(
-            { error: "tmdb discover failed", movie: m, tv: t },
+            {
+              error: "tmdb discover failed",
+              movie: m,
+              tv: t,
+            },
             { status: 502 }
           );
         }
@@ -603,9 +464,13 @@ const [m, t] = await Promise.all([
         const mItems = m.json ? normalizeResults(m.json?.results ?? [], "movie") : [];
         const tItems = t.json ? normalizeResults(t.json?.results ?? [], "tv") : [];
 
-        merged = applyBaseFilters([...mItems, ...tItems], type, year, genreMovie, genreTv).sort(
-          (a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1)
-        );
+        merged = applyBaseFilters(
+          [...mItems, ...tItems],
+          type,
+          year,
+          genreMovie,
+          genreTv
+        ).sort((a, b) => (b.vote_count ?? -1) - (a.vote_count ?? -1));
 
         totalPages = Math.max(m.json?.total_pages ?? 0, t.json?.total_pages ?? 0, 1);
       }
@@ -651,7 +516,11 @@ const [m, t] = await Promise.all([
         return bVotes - aVotes;
       });
 
-      collected = dedupeItems([...collected, ...sortedFiltered]).slice(0, TARGET_BATCH_SIZE);
+      collected = dedupeItems([...collected, ...sortedFiltered]).slice(
+        0,
+        TARGET_BATCH_SIZE
+      );
+
       sourcePage += 1;
     }
 

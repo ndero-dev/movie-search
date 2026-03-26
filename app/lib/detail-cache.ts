@@ -1,7 +1,7 @@
 import { unstable_cache } from "next/cache";
 
 type AnyObj = Record<string, any>;
-type MediaType = "movie" | "tv";
+export type MediaType = "movie" | "tv";
 
 export type RatingSource = {
   rating: number | string;
@@ -112,7 +112,8 @@ function extractSource(md: AnyObj, key: string): RatingSource | null {
   const arr = md?.ratings;
   if (Array.isArray(arr)) {
     const found = arr.find(
-      (x) => String(x?.source ?? x?.name ?? "").toLowerCase() === key.toLowerCase()
+      (x) =>
+        String(x?.source ?? x?.name ?? "").toLowerCase() === key.toLowerCase()
     );
     const d = normalizeRatingEntry(found);
     if (d) return d;
@@ -121,7 +122,8 @@ function extractSource(md: AnyObj, key: string): RatingSource | null {
   const arr2 = md?.sources;
   if (Array.isArray(arr2)) {
     const found = arr2.find(
-      (x) => String(x?.source ?? x?.name ?? "").toLowerCase() === key.toLowerCase()
+      (x) =>
+        String(x?.source ?? x?.name ?? "").toLowerCase() === key.toLowerCase()
     );
     const e = normalizeRatingEntry(found);
     if (e) return e;
@@ -241,19 +243,25 @@ async function getWatchProvidersCore(mediaType: MediaType, id: string) {
   };
 }
 
+type ExtraRatingsCoreResult = Omit<ExtraRatingsResult, "mdblist"> & {
+  mdblistId: string | number | null;
+  mdblistType: "movie" | "show";
+};
+
 async function getExtraRatingsCore(
   mediaType: MediaType,
-  tmdbId: string,
-  title?: string | null
-): Promise<ExtraRatingsResult> {
+  tmdbId: string
+): Promise<ExtraRatingsCoreResult> {
   const TMDB_TOKEN = process.env.TMDB_BEARER_TOKEN;
+
   if (!TMDB_TOKEN) {
     return {
       imdb_id: null,
       imdbRating: null,
       imdbVotes: null,
       turkceAltyaziUrl: null,
-      mdblist: null,
+      mdblistId: null,
+      mdblistType: mediaType === "movie" ? "movie" : "show",
       sources: {} as ExtraSources,
       watchProviders: {
         region: WATCH_PROVIDER_REGION,
@@ -276,7 +284,8 @@ async function getExtraRatingsCore(
       imdbRating: null,
       imdbVotes: null,
       turkceAltyaziUrl: null,
-      mdblist: null,
+      mdblistId: null,
+      mdblistType: mediaType === "movie" ? "movie" : "show",
       sources: {} as ExtraSources,
       watchProviders,
     };
@@ -291,7 +300,8 @@ async function getExtraRatingsCore(
       imdbRating: null,
       imdbVotes: null,
       turkceAltyaziUrl: null,
-      mdblist: null,
+      mdblistId: null,
+      mdblistType: mediaType === "movie" ? "movie" : "show",
       sources: {} as ExtraSources,
       watchProviders,
     };
@@ -334,25 +344,24 @@ async function getExtraRatingsCore(
 
   const imdbRating =
     sources.imdb?.rating != null ? toNumberRating(sources.imdb.rating) : null;
+
   const imdbVotes =
     sources.imdb?.votes != null ? toIntVotes(sources.imdb.votes) : null;
 
-  const mdblistId = (md?.ids?.mdblist ?? md?.id ?? null) as string | number | null;
+  const mdblistId = (md?.ids?.mdblist ?? md?.id ?? null) as
+    | string
+    | number
+    | null;
+
   const mdblistType: "movie" | "show" = mediaType === "movie" ? "movie" : "show";
-  const mdblistUrl = mdblistId ? mdblistWebUrl(mdblistType, mdblistId, title) : null;
 
   return {
     imdb_id,
     imdbRating,
     imdbVotes,
     turkceAltyaziUrl: turkceAltyaziUrlFromImdb(imdb_id),
-    mdblist: mdblistId
-      ? {
-          id: mdblistId,
-          type: mdblistType,
-          url: mdblistUrl,
-        }
-      : null,
+    mdblistId,
+    mdblistType,
     sources,
     watchProviders,
   };
@@ -375,16 +384,31 @@ export async function getCachedExtraRatings(
   mediaType: MediaType,
   id: string,
   title?: string | null
-) {
-  const safeTitle = title ?? "";
+): Promise<ExtraRatingsResult> {
   const fn = unstable_cache(
-    async () => getExtraRatingsCore(mediaType, id, safeTitle),
-    [`detail-extra:${mediaType}:${id}:${safeTitle}`],
+    async () => getExtraRatingsCore(mediaType, id),
+    [`detail-extra:${mediaType}:${id}`],
     {
       revalidate: 86400,
       tags: [`detail-extra:${mediaType}:${id}`],
     }
   );
 
-  return fn();
+  const core = await fn();
+
+  return {
+    imdb_id: core.imdb_id,
+    imdbRating: core.imdbRating,
+    imdbVotes: core.imdbVotes,
+    turkceAltyaziUrl: core.turkceAltyaziUrl,
+    mdblist: core.mdblistId
+      ? {
+          id: core.mdblistId,
+          type: core.mdblistType,
+          url: mdblistWebUrl(core.mdblistType, core.mdblistId, title),
+        }
+      : null,
+    sources: core.sources,
+    watchProviders: core.watchProviders,
+  };
 }

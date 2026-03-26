@@ -478,6 +478,56 @@ export default function HomePage() {
     return true;
   }
 
+  async function fetchSavedExtraData(
+    mediaType: MediaType,
+    id: number,
+    title: string,
+    originalTitle?: string | null,
+    originalName?: string | null
+  ) {
+    const queries = Array.from(
+      new Set(
+        [title, originalTitle, originalName]
+          .map((value) => safeInputValue(value).trim())
+          .filter(Boolean)
+      )
+    );
+
+    for (const q of queries) {
+      try {
+        const json = (await searchApi({
+          q,
+          type: mediaType,
+          page: 1,
+        })) as SearchResponse;
+
+        const found = (json?.results ?? []).find(
+          (result) => result.id === id && result.media_type === mediaType
+        );
+
+        if (found) {
+          return {
+            imdbRating: found.imdbRating ?? null,
+            imdbVotes: found.imdbVotes ?? null,
+            sources: found.sources,
+            turkceAltyaziUrl: found.turkceAltyaziUrl ?? null,
+            mdblist: found.mdblist ?? null,
+          };
+        }
+      } catch {
+        // ignore and try next candidate query
+      }
+    }
+
+    return {
+      imdbRating: null,
+      imdbVotes: null,
+      sources: undefined,
+      turkceAltyaziUrl: null,
+      mdblist: null,
+    };
+  }
+
   async function buildSavedItem(mediaType: MediaType, id: number, selectedPlatform: string) {
     async function fetchDetailWithType(typeToTry: MediaType) {
       try {
@@ -521,6 +571,14 @@ export default function HomePage() {
       providerIds = [];
     }
 
+    const extra = await fetchSavedExtraData(
+      resolvedMediaType,
+      detail.id,
+      detail.title ?? detail.name ?? "",
+      detail.original_title ?? null,
+      detail.original_name ?? null
+    );
+
     const item: Item = {
       id: detail.id,
       media_type: resolvedMediaType,
@@ -534,9 +592,12 @@ export default function HomePage() {
       vote_average: typeof detail.vote_average === "number" ? detail.vote_average : null,
       vote_count: typeof detail.vote_count === "number" ? detail.vote_count : null,
       genre_ids: Array.isArray(detail.genres) ? detail.genres.map((g: any) => g.id) : [],
-      imdbRating: null,
-      imdbVotes: null,
+      imdbRating: extra.imdbRating,
+      imdbVotes: extra.imdbVotes,
       provider_ids: providerIds,
+      sources: extra.sources,
+      turkceAltyaziUrl: extra.turkceAltyaziUrl,
+      mdblist: extra.mdblist,
     };
 
     if (selectedPlatform) {
