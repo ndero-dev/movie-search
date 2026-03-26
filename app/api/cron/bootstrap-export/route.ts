@@ -324,7 +324,7 @@ export async function GET(req: Request) {
       const voteAverage = Number(detail.vote_average ?? 0);
       const voteCount = Number(detail.vote_count ?? 0);
 
-      if (!(voteAverage >= 5.5 && voteCount >= 40)) {
+      if (!(voteAverage >= 5.5 && voteCount>=10)) {
         filtered++;
         handledRows++;
         continue;

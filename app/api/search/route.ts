@@ -556,41 +556,42 @@ export async function GET(req: Request) {
           with_watch_providers: providerSelected ? selectedProviderId : undefined,
         };
 
-        const [m, t] = await Promise.all([
-          wantMovie
-            ? safeDiscover(
-                "movie",
-                {
-                  ...common,
-                  sort_by: "vote_count.desc",
-                  primary_release_year: year || undefined,
-                  with_genres: genreMovie || undefined,
-                },
-                providerSelected
-              )
-            : Promise.resolve({
-                ok: true,
-                status: 200,
-                json: { results: [], total_pages: 0, total_results: 0 },
-              }),
+       const minDate = year ? `${year}-01-01` : undefined;
 
-          wantTv
-            ? safeDiscover(
-                "tv",
-                {
-                  ...common,
-                  sort_by: "vote_count.desc",
-                  first_air_date_year: year || undefined,
-                  with_genres: genreTv || undefined,
-                },
-                providerSelected
-              )
-            : Promise.resolve({
-                ok: true,
-                status: 200,
-                json: { results: [], total_pages: 0, total_results: 0 },
-              }),
-        ]);
+const [m, t] = await Promise.all([
+  wantMovie
+    ? safeDiscover(
+        "movie",
+        {
+          ...common,
+          sort_by: "vote_count.desc",
+          "primary_release_date.gte": minDate,
+          with_genres: genreMovie || undefined,
+        },
+        providerSelected
+      )
+    : Promise.resolve({
+        ok: true,
+        status: 200,
+        json: { results: [], total_pages: 0, total_results: 0 },
+      }),
+  wantTv
+    ? safeDiscover(
+        "tv",
+        {
+          ...common,
+          sort_by: "vote_count.desc",
+          "first_air_date.gte": minDate,
+          with_genres: genreTv || undefined,
+        },
+        providerSelected
+      )
+    : Promise.resolve({
+        ok: true,
+        status: 200,
+        json: { results: [], total_pages: 0, total_results: 0 },
+      }),
+]);
 
         if (!m.ok || !t.ok) {
           return NextResponse.json(
